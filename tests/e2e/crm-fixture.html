@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CRM Fixture - Linvo AI</title>
+    <style>
+      body {
+        background: #eef2f7;
+        color: #172033;
+        font-family: Inter, system-ui, sans-serif;
+        margin: 0;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        min-height: 100vh;
+      }
+
+      aside {
+        background: #ffffff;
+        border-right: 1px solid #d8e0ec;
+        padding: 16px;
+      }
+
+      .contact {
+        border: 1px solid #d8e0ec;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        padding: 10px;
+      }
+
+      .contact.active {
+        border-color: #14b8a6;
+        box-shadow: inset 3px 0 0 #14b8a6;
+      }
+
+      main {
+        padding: 24px;
+      }
+
+      .conversation {
+        background: #ffffff;
+        border: 1px solid #d8e0ec;
+        border-radius: 8px;
+        max-width: 760px;
+        padding: 18px;
+      }
+
+      .message {
+        background: #f8fafc;
+        border-radius: 8px;
+        margin-top: 12px;
+        padding: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside aria-label="Fila de atendimentos">
+        <h2>Fila</h2>
+        <article class="contact active" aria-selected="true">
+          <strong>Cliente A - Maria Silva</strong>
+          <p>TK-1048 - Problema com boleto</p>
+        </article>
+        <article class="contact">
+          <strong>Cliente B - Bruno Costa</strong>
+          <p>TK-1053 - Alteracao cadastral</p>
+        </article>
+      </aside>
+      <main>
+        <section class="conversation" role="region" aria-label="Conversa ativa com Maria Silva">
+          <header>
+            <h1>Maria Silva</h1>
+            <p>Telefone: (11) 99999-1234</p>
+            <p>Protocolo: TK-1048</p>
+            <p>Status: Aberto</p>
+          </header>
+          <div class="message">
+            Cliente relata que o boleto de maio ainda nao chegou por email.
+          </div>
+          <div class="message">
+            Proxima acao segura: confirmar email cadastrado e reenviar boleto.
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

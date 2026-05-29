@@ -1,0 +1,20 @@
+{
+  "name": "linvo-ai",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.29.2",
+  "scripts": {
+    "build": "pnpm -r build",
+    "db:down": "docker compose down",
+    "db:up": "docker compose up -d postgres",
+    "dev": "pnpm --parallel --filter @linvo-ai/server --filter @linvo-ai/extension dev",
+    "prisma:generate": "pnpm --filter @linvo-ai/server prisma:generate",
+    "test": "pnpm -r test",
+    "test:e2e": "playwright test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "typescript": "^5.9.3"
+  }
+}

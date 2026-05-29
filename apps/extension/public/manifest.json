@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Linvo AI",
+  "description": "Identificacao assistida de cliente em CRMs genericos.",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "sidePanel", "storage", "tabs"],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:8791/*",
+    "http://localhost:8791/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Linvo AI"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

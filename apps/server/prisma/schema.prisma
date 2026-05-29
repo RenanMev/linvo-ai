@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                  String               @id @default(uuid()) @db.Uuid
+  email               String               @unique
+  passwordHash        String
+  name                String?
+  status              String               @default("active")
+  createdAt           DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @db.Timestamptz(6)
+  customers           Customer[]
+  customerCases       CustomerCase[]
+  customerDomPatterns CustomerDomPattern[]
+  identificationRuns  IdentificationRun[]
+  refreshSessions     RefreshSession[]
+}
+
+model RefreshSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  userAgent String?
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime  @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Customer {
+  id                 String               @id @default(uuid()) @db.Uuid
+  userId             String               @db.Uuid
+  domain             String
+  identityHash       String
+  identityKind       String
+  displayName        String?
+  maskedIdentifiers  Json                 @default("{}")
+  confidence         Decimal              @db.Decimal(4, 3)
+  firstSeenAt        DateTime             @default(now()) @db.Timestamptz(6)
+  lastSeenAt         DateTime             @default(now()) @db.Timestamptz(6)
+  createdAt          DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime             @updatedAt @db.Timestamptz(6)
+  cases              CustomerCase[]
+  domPatterns        CustomerDomPattern[]
+  identificationRuns IdentificationRun[]
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domain, identityHash])
+  @@index([userId, domain, lastSeenAt])
+}
+
+model CustomerCase {
+  id                 String              @id @default(uuid()) @db.Uuid
+  userId             String              @db.Uuid
+  customerId         String?             @db.Uuid
+  domain             String
+  caseHash           String
+  caseKind           String
+  protocolDisplay    String?
+  subjectDisplay     String?
+  statusDisplay      String?
+  confidence         Decimal             @db.Decimal(4, 3)
+  firstSeenAt        DateTime            @default(now()) @db.Timestamptz(6)
+  lastSeenAt         DateTime            @default(now()) @db.Timestamptz(6)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(6)
+  customer           Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  identificationRuns IdentificationRun[]
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domain, caseHash])
+  @@index([userId, domain, lastSeenAt])
+}
+
+model CustomerDomPattern {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  customerId     String   @db.Uuid
+  domain         String
+  patternHash    String
+  anchorText     String?
+  nameText       String?
+  identifierText String?
+  signatureJson  Json     @default("{}")
+  lastSeenAt     DateTime @default(now()) @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+  customer       Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domain, patternHash])
+  @@index([customerId])
+  @@index([userId, domain, lastSeenAt])
+}
+
+model IdentificationRun {
+  id                 String        @id @default(uuid()) @db.Uuid
+  userId             String        @db.Uuid
+  customerId         String?       @db.Uuid
+  customerCaseId     String?       @db.Uuid
+  requestId          String
+  domain             String
+  pageUrlHash        String
+  selectedLabel      String?
+  confidence         Decimal       @db.Decimal(4, 3)
+  saved              Boolean       @default(false)
+  candidateJson      Json          @default("{}")
+  domSignatureJson   Json          @default("{}")
+  confirmationStatus String        @default("not_required")
+  confirmedAt        DateTime?     @db.Timestamptz(6)
+  bulkBatchId        String?
+  bulkItemIndex      Int?
+  evidenceJson       Json          @default("[]")
+  warningsJson       Json          @default("[]")
+  durationMs         Int?
+  createdAt          DateTime      @default(now()) @db.Timestamptz(6)
+  customer           Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerCase       CustomerCase? @relation(fields: [customerCaseId], references: [id], onDelete: SetNull)
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, requestId])
+  @@index([userId, domain, createdAt])
+  @@index([userId, domain, bulkBatchId])
+}
