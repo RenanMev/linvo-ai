@@ -40,6 +40,7 @@ const bulkResponse: BulkClientIdentificationApiResponse = {
     {
       case: null,
       confidence: 0.9,
+      customerId: "11111111-1111-4111-8111-111111111111",
       displayName: "Cliente salvo",
       evidence: [],
       maskedIdentifiers: { protocol: "140987001" },
@@ -61,11 +62,13 @@ describe("BulkCandidatesView", () => {
     const container = document.createElement("div");
     const root = createRoot(container);
     const decisions: Array<{ accept: string[]; reject: string[] }> = [];
+    const deletedRequestIds: string[] = [];
 
     await act(async () => {
       root.render(
         <BulkCandidatesView
           decisionLoading={false}
+          onDeleteCandidate={(candidate) => deletedRequestIds.push(candidate.requestId)}
           onDecision={(accept, reject) => decisions.push({ accept, reject })}
           result={bulkResponse}
         />
@@ -76,10 +79,20 @@ describe("BulkCandidatesView", () => {
     expect(container.textContent).toContain("Giulliano");
     expect(container.textContent).toContain("Ja salvo");
 
-    const checkboxes = Array.from(container.querySelectorAll("input[type='checkbox']"));
+    const checkboxes = Array.from(container.querySelectorAll("[role='checkbox']"));
     expect(checkboxes).toHaveLength(3);
-    expect((checkboxes[0] as HTMLInputElement).checked).toBe(true);
-    expect((checkboxes[2] as HTMLInputElement).disabled).toBe(true);
+    expect(checkboxes[0]?.getAttribute("aria-checked")).toBe("true");
+    expect((checkboxes[2] as HTMLButtonElement).disabled).toBe(true);
+
+    const deleteButtons = Array.from(container.querySelectorAll("button[aria-label^='Delete ']"));
+    expect(deleteButtons).toHaveLength(3);
+    expect(deleteButtons.every((button) => button.textContent?.includes("Delete"))).toBe(true);
+
+    await act(async () => {
+      deleteButtons[2]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(deletedRequestIds).toEqual(["bulk-item-known"]);
 
     await act(async () => {
       checkboxes[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

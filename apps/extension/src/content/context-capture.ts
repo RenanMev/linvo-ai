@@ -1,5 +1,6 @@
 import type {
   ClientIdentificationRequest,
+  ClientInfoOpenRequest,
   BulkClientIdentificationRequest,
   BulkIdentificationItem,
   BulkListSelection,
@@ -38,6 +39,17 @@ export function captureSurroundingText(element: Element): string {
   return compactText(parent.textContent ?? document.body.innerText ?? "", 8_000);
 }
 
+export function captureVisiblePageText(): string {
+  return compactText(
+    document.body?.innerText ||
+      document.body?.textContent ||
+      document.documentElement.textContent ||
+      document.title ||
+      window.location.href,
+    8_000
+  );
+}
+
 export function buildIdentificationRequest(
   element: Element,
   manualSelection: ManualSelection
@@ -50,6 +62,16 @@ export function buildIdentificationRequest(
     requestId: crypto.randomUUID(),
     selectedText: manualSelection.textExcerpt,
     surroundingText: captureSurroundingText(element),
+    url: window.location.href
+  };
+}
+
+export function buildClientInfoOpenRequest(): ClientInfoOpenRequest {
+  return {
+    capturedAt: new Date().toISOString(),
+    pageText: captureVisiblePageText() || "Pagina sem texto visivel.",
+    pageTitle: document.title || "Pagina sem titulo",
+    requestId: crypto.randomUUID(),
     url: window.location.href
   };
 }

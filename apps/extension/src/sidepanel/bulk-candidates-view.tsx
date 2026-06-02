@@ -5,8 +5,18 @@ import type {
   BulkClientIdentificationCandidate
 } from "@linvo-ai/shared";
 
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Trash2Icon } from "lucide-react";
+
 interface BulkCandidatesViewProps {
+  deleteLoadingRequestIds?: Set<string>;
   decisionLoading: boolean;
+  onDeleteCandidate?: (candidate: BulkClientIdentificationCandidate) => void;
   onDecision: (acceptRequestIds: string[], rejectRequestIds: string[]) => void;
   result: BulkClientIdentificationApiResponse | null;
 }
@@ -34,7 +44,9 @@ function stateText(candidate: BulkClientIdentificationCandidate): string {
 }
 
 export function BulkCandidatesView({
+  deleteLoadingRequestIds = new Set(),
   decisionLoading,
+  onDeleteCandidate,
   onDecision,
   result
 }: BulkCandidatesViewProps) {
@@ -70,10 +82,16 @@ export function BulkCandidatesView({
 
   if (result.status === "error") {
     return (
-      <section className="panel">
-        <h2>Clientes encontrados</h2>
-        <p className="error">{result.message}</p>
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Clientes encontrados</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Alert variant="destructive">
+            <AlertDescription>{result.message}</AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
     );
   }
 
@@ -107,47 +125,73 @@ export function BulkCandidatesView({
   }
 
   return (
-    <section className="panel">
-      <div className="section-heading">
-        <h2>Clientes encontrados</h2>
-        <span>{result.candidates.length}</span>
-      </div>
+    <Card>
+      <CardHeader className="flex items-center justify-between gap-3">
+        <CardTitle className="text-base">Clientes encontrados</CardTitle>
+        <Badge variant="linvo">{result.candidates.length}</Badge>
+      </CardHeader>
+      <CardContent>
       {result.candidates.length === 0 ? (
-        <p className="muted">Nenhum candidato encontrado na lista.</p>
+        <p className="text-sm text-muted-foreground">Nenhum candidato encontrado na lista.</p>
       ) : (
-        <>
-          <ul className="bulk-list">
-            {result.candidates.map((candidate) => (
-              <li key={candidate.requestId}>
-                <label className="bulk-row">
-                  <input
-                    checked={selected.has(candidate.requestId)}
-                    disabled={candidate.saveState !== "pending_confirmation" || decisionLoading}
-                    type="checkbox"
-                    onChange={() => toggleCandidate(candidate)}
-                  />
-                  <span>
-                    <strong>{candidate.displayName ?? candidate.rowText}</strong>
-                    <small>{identifierText(candidate)}</small>
-                  </span>
-                  <em>{stateText(candidate)}</em>
-                </label>
-                {candidate.warnings.length ? (
-                  <p className="bulk-warning">{candidate.warnings[0]}</p>
-                ) : null}
-              </li>
-            ))}
+        <div className="grid gap-3">
+          <ScrollArea className="max-h-64">
+          <ul className="grid gap-2 pr-3">
+            {result.candidates.map((candidate) => {
+              const deleteLoading = deleteLoadingRequestIds.has(candidate.requestId);
+
+              return (
+                <li key={candidate.requestId}>
+                  <div className="rounded-lg border bg-card p-2">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                      <label className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 text-sm">
+                        <Checkbox
+                          aria-label={`Selecionar ${candidate.displayName ?? candidate.rowText}`}
+                          checked={selected.has(candidate.requestId)}
+                          disabled={candidate.saveState !== "pending_confirmation" || decisionLoading}
+                          onCheckedChange={() => toggleCandidate(candidate)}
+                        />
+                        <span className="grid min-w-0 gap-0.5">
+                          <strong className="truncate">{candidate.displayName ?? candidate.rowText}</strong>
+                          <small className="truncate text-xs text-muted-foreground">{identifierText(candidate)}</small>
+                        </span>
+                        <Badge variant={candidate.saveState === "known" ? "secondary" : "outline"}>
+                          {stateText(candidate)}
+                        </Badge>
+                      </label>
+                      <Button
+                      aria-label={`Delete ${candidate.displayName ?? candidate.rowText}`}
+                      disabled={decisionLoading || deleteLoading}
+                      size="icon"
+                      title="Apagar cliente desta lista."
+                      type="button"
+                      variant="destructive"
+                      onClick={() => onDeleteCandidate?.(candidate)}
+                    >
+                        <Trash2Icon className="size-4" />
+                        <span className="sr-only">{deleteLoading ? "Apagando" : "Delete"}</span>
+                      </Button>
+                    </div>
+                    {candidate.warnings.length ? (
+                      <p className="mt-2 pl-6 text-xs text-muted-foreground">{candidate.warnings[0]}</p>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
-          <button
-            className="bulk-submit"
+          </ScrollArea>
+          <Button
             disabled={decisionLoading || selectedCount === 0}
             type="button"
+            variant="linvo"
             onClick={submit}
           >
             {decisionLoading ? "Adicionando..." : `Adicionar selecionados (${selectedCount})`}
-          </button>
-        </>
+          </Button>
+        </div>
       )}
-    </section>
+      </CardContent>
+    </Card>
   );
 }

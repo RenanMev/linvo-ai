@@ -6,8 +6,18 @@ import {
   type ManualSelection
 } from "@linvo-ai/shared";
 
+import { PickerOverlayView } from "./picker-overlay-view";
+import { createShadowReactMount } from "./shadow-ui";
+
 const ROOT_ID = "linvo-ai-picker-root";
 const MIN_TEXT_LENGTH = 3;
+const EMPTY_HIGHLIGHT = {
+  height: 0,
+  left: 0,
+  top: 0,
+  visible: false,
+  width: 0
+};
 
 function compactText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -202,61 +212,51 @@ export function startClientPicker(): Promise<{ element: Element; selection: Manu
   existing?.remove();
 
   return new Promise((resolve) => {
-    const root = document.createElement("div");
-    root.id = ROOT_ID;
+    const mount = createShadowReactMount(ROOT_ID);
+    const root = mount.host;
     root.style.position = "fixed";
     root.style.inset = "0";
     root.style.zIndex = "2147483646";
     root.style.pointerEvents = "none";
-
-    const highlight = document.createElement("div");
-    highlight.style.position = "fixed";
-    highlight.style.border = "2px solid #14b8a6";
-    highlight.style.borderRadius = "8px";
-    highlight.style.background = "rgba(20, 184, 166, 0.12)";
-    highlight.style.boxShadow = "0 0 0 9999px rgba(15, 23, 42, 0.08)";
-    highlight.style.display = "none";
-    highlight.style.pointerEvents = "none";
-
-    const hint = document.createElement("div");
-    hint.textContent = "Selecione o cliente base na pagina. Esc cancela.";
-    hint.style.position = "fixed";
-    hint.style.left = "50%";
-    hint.style.top = "16px";
-    hint.style.transform = "translateX(-50%)";
-    hint.style.background = "#111827";
-    hint.style.color = "#f8fafc";
-    hint.style.borderRadius = "8px";
-    hint.style.padding = "9px 12px";
-    hint.style.font = "13px Inter, system-ui, sans-serif";
-    hint.style.boxShadow = "0 12px 32px rgba(15, 23, 42, 0.24)";
-
-    root.append(highlight, hint);
-    document.documentElement.append(root);
-
+    let hint = "Selecione o cliente base na pagina. Esc cancela.";
+    let highlight = EMPTY_HIGHLIGHT;
     let hovered: Element | null = null;
+
+    const render = () => {
+      mount.render(
+        <PickerOverlayView
+          highlight={highlight}
+          hint={hint}
+          tone="teal"
+        />
+      );
+    };
 
     const cleanup = () => {
       document.removeEventListener("pointermove", onPointerMove, true);
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown, true);
-      root.remove();
+      mount.unmount();
     };
 
     const updateHighlight = (element: Element | null) => {
       hovered = element;
 
       if (!element) {
-        highlight.style.display = "none";
+        highlight = EMPTY_HIGHLIGHT;
+        render();
         return;
       }
 
       const rect = element.getBoundingClientRect();
-      highlight.style.display = "block";
-      highlight.style.left = `${rect.left}px`;
-      highlight.style.top = `${rect.top}px`;
-      highlight.style.width = `${rect.width}px`;
-      highlight.style.height = `${rect.height}px`;
+      highlight = {
+        height: rect.height,
+        left: rect.left,
+        top: rect.top,
+        visible: true,
+        width: rect.width
+      };
+      render();
     };
 
     function onPointerMove(event: PointerEvent) {
@@ -275,7 +275,8 @@ export function startClientPicker(): Promise<{ element: Element; selection: Manu
       const text = element ? getElementText(element) : "";
 
       if (!element || text.length < MIN_TEXT_LENGTH) {
-        hint.textContent = "Selecione uma area com texto do cliente.";
+        hint = "Selecione uma area com texto do cliente.";
+        render();
         return;
       }
 
@@ -311,6 +312,7 @@ export function startClientPicker(): Promise<{ element: Element; selection: Manu
     document.addEventListener("pointermove", onPointerMove, true);
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown, true);
+    render();
   });
 }
 
@@ -323,65 +325,55 @@ export function startListPicker(): Promise<{
   existing?.remove();
 
   return new Promise((resolve) => {
-    const root = document.createElement("div");
-    root.id = ROOT_ID;
+    const mount = createShadowReactMount(ROOT_ID);
+    const root = mount.host;
     root.style.position = "fixed";
     root.style.inset = "0";
     root.style.zIndex = "2147483646";
     root.style.pointerEvents = "none";
-
-    const highlight = document.createElement("div");
-    highlight.style.position = "fixed";
-    highlight.style.border = "2px solid #f97316";
-    highlight.style.borderRadius = "8px";
-    highlight.style.background = "rgba(249, 115, 22, 0.12)";
-    highlight.style.boxShadow = "0 0 0 9999px rgba(15, 23, 42, 0.08)";
-    highlight.style.display = "none";
-    highlight.style.pointerEvents = "none";
-
-    const hint = document.createElement("div");
-    hint.textContent = "Selecione a lista de clientes. Esc cancela.";
-    hint.style.position = "fixed";
-    hint.style.left = "50%";
-    hint.style.top = "16px";
-    hint.style.transform = "translateX(-50%)";
-    hint.style.background = "#111827";
-    hint.style.color = "#f8fafc";
-    hint.style.borderRadius = "8px";
-    hint.style.padding = "9px 12px";
-    hint.style.font = "13px Inter, system-ui, sans-serif";
-    hint.style.boxShadow = "0 12px 32px rgba(15, 23, 42, 0.24)";
-
-    root.append(highlight, hint);
-    document.documentElement.append(root);
-
+    let hint = "Selecione a lista de clientes. Esc cancela.";
+    let highlight = EMPTY_HIGHLIGHT;
     let hovered: Element | null = null;
+
+    const render = () => {
+      mount.render(
+        <PickerOverlayView
+          highlight={highlight}
+          hint={hint}
+          tone="amber"
+        />
+      );
+    };
 
     const cleanup = () => {
       document.removeEventListener("pointermove", onPointerMove, true);
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown, true);
-      root.remove();
+      mount.unmount();
     };
 
     const updateHighlight = (element: Element | null) => {
       hovered = element;
 
       if (!element) {
-        highlight.style.display = "none";
+        highlight = EMPTY_HIGHLIGHT;
+        render();
         return;
       }
 
       const rect = element.getBoundingClientRect();
       const count = extractListItems(element).length;
-      hint.textContent = count
+      hint = count
         ? `${count} clientes visiveis encontrados. Clique para confirmar.`
         : "Selecione uma area com linhas de clientes.";
-      highlight.style.display = "block";
-      highlight.style.left = `${rect.left}px`;
-      highlight.style.top = `${rect.top}px`;
-      highlight.style.width = `${rect.width}px`;
-      highlight.style.height = `${rect.height}px`;
+      highlight = {
+        height: rect.height,
+        left: rect.left,
+        top: rect.top,
+        visible: true,
+        width: rect.width
+      };
+      render();
     };
 
     function onPointerMove(event: PointerEvent) {
@@ -401,7 +393,8 @@ export function startListPicker(): Promise<{
       const text = element ? getElementText(element) : "";
 
       if (!element || items.length < 2 || text.length < MIN_TEXT_LENGTH) {
-        hint.textContent = "Selecione uma lista com pelo menos 2 linhas visiveis.";
+        hint = "Selecione uma lista com pelo menos 2 linhas visiveis.";
+        render();
         return;
       }
 
@@ -438,5 +431,6 @@ export function startListPicker(): Promise<{
     document.addEventListener("pointermove", onPointerMove, true);
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown, true);
+    render();
   });
 }

@@ -5,14 +5,27 @@ import {
   setAuthSession
 } from "../lib/auth-session";
 import {
+  isApiClientError,
   login,
   logout,
   me,
   refresh,
-  register
+  register,
+  requestPasswordReset,
+  resetPassword
 } from "../lib/api-client";
 
 function errorResponse(error: unknown): RuntimeResponseMessage {
+  if (isApiClientError(error)) {
+    return {
+      error: {
+        errorCode: error.errorCode,
+        message: error.message
+      },
+      ok: false
+    };
+  }
+
   return {
     error: {
       errorCode: "AUTH_REQUIRED",
@@ -43,6 +56,18 @@ export function handleAuthMessage(
         const response = await register(message.request);
         await setAuthSession({ tokens: response.tokens, user: response.user });
         sendResponse({ ok: true, response });
+        return;
+      }
+
+      if (message.type === "auth/password-reset.request") {
+        const response = await requestPasswordReset(message.request);
+        sendResponse({ ok: true, response });
+        return;
+      }
+
+      if (message.type === "auth/password-reset.confirm") {
+        await resetPassword(message.request);
+        sendResponse({ ok: true });
         return;
       }
 

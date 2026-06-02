@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 
+import "../styles/linvo-ui.css";
 import { App } from "./app";
 
 const root = document.getElementById("root");

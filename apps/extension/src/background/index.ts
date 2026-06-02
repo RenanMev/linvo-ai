@@ -15,6 +15,30 @@ chrome.runtime.onMessage.addListener((
   sender,
   sendResponse: (response: RuntimeResponseMessage) => void
 ) => {
+  if (message.type === "ui/open-sidepanel") {
+    void (async () => {
+      try {
+        if (chrome.sidePanel?.open && sender.tab?.id !== undefined) {
+          await chrome.sidePanel.open({ tabId: sender.tab.id });
+        }
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({
+          error: {
+            errorCode: "INTERNAL_ERROR",
+            message:
+              error instanceof Error && error.message
+                ? error.message
+                : "Nao foi possivel abrir o Linvo AI."
+          },
+          ok: false
+        });
+      }
+    })();
+
+    return true;
+  }
+
   return (
     handleAuthMessage(message, sendResponse) ??
     handleClientIdentificationMessage(message, sender, sendResponse)

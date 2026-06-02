@@ -10,7 +10,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -101,10 +102,16 @@ label {
   gap: 5px;
 }
 
-input {
+input,
+textarea {
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   padding: 9px 10px;
+}
+
+textarea {
+  min-height: 112px;
+  resize: vertical;
 }
 
 .error {
@@ -117,6 +124,7 @@ input {
   align-items: center;
   display: flex;
   justify-content: space-between;
+  gap: 10px;
 }
 
 .section-heading span {
@@ -125,6 +133,32 @@ input {
   color: #115e59;
   font-size: 12px;
   padding: 3px 8px;
+}
+
+.contacts-heading-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.contacts-heading-actions button,
+.danger-button {
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 10px;
+}
+
+.contacts-heading-actions button {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.danger-button {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 dl {
@@ -191,6 +225,99 @@ dd {
   padding-left: 0;
 }
 
+.contacts-layout {
+  display: grid;
+  gap: 12px;
+}
+
+.contacts-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.contact-list-item {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.contact-row {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #0f172a;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.contact-row.is-selected,
+.contact-row:focus {
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.18);
+  outline: none;
+}
+
+.contact-row small,
+.contact-row span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.contact-delete {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #b91c1c;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 74px;
+}
+
+.contact-delete:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.contact-detail {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.contact-detail-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.contact-detail h3,
+.contact-detail p {
+  margin: 0;
+}
+
+.contact-edit-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.contact-edit-wide {
+  grid-column: 1 / -1;
+}
+
 .recent-list li {
   display: grid;
   gap: 2px;
@@ -210,6 +337,13 @@ dd {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 8px;
+}
+
+.bulk-row-shell {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .bulk-row {
@@ -248,6 +382,22 @@ dd {
   color: #475569;
   font-size: 11px;
   font-style: normal;
+}
+
+.bulk-delete {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #991b1b;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 10px;
+}
+
+.bulk-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .bulk-warning {
