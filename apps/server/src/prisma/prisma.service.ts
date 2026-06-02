@@ -1,16 +1,20 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import type { OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 
+import type { AppConfig } from "../config/env.schema";
+import { APP_CONFIG } from "../config/env.schema";
+
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  constructor() {
+export class PrismaService
+  extends PrismaClient
+  implements OnModuleInit, OnModuleDestroy
+{
+  constructor(@Inject(APP_CONFIG) config: AppConfig) {
     super({
       adapter: new PrismaPg({
-        connectionString:
-          process.env.DATABASE_URL ??
-          "postgresql://linvo_ai:linvo_ai_dev@127.0.0.1:54329/linvo_ai"
+        connectionString: config.DATABASE_URL
       })
     });
   }

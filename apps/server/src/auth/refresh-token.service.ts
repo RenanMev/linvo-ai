@@ -33,35 +33,43 @@ export class RefreshTokenService {
       where: { tokenHash }
     });
 
-    if (
-      !session ||
-      session.revokedAt ||
-      session.expiresAt.getTime() < Date.now() ||
-      session.user.status !== "active"
-    ) {
+    const now = new Date();
+
+    if (!session || session.revokedAt || session.expiresAt <= now || session.user.status !== "active") {
       return null;
     }
 
     const nextRefreshToken = this.tokenService.createRefreshToken();
-    await this.prisma.$transaction([
-      this.prisma.refreshSession.update({
-        data: { revokedAt: new Date() },
-        where: { id: session.id }
-      }),
-      this.prisma.refreshSession.create({
+    const rotated = await this.prisma.$transaction(async (transaction) => {
+      const updated = await transaction.refreshSession.updateMany({
+        data: { revokedAt: now },
+        where: {
+          expiresAt: { gt: now },
+          id: session.id,
+          revokedAt: null
+        }
+      });
+
+      if (updated.count !== 1) {
+        return null;
+      }
+
+      await transaction.refreshSession.create({
         data: {
           expiresAt: this.tokenService.getRefreshTokenExpiry(),
           tokenHash: this.tokenService.hashRefreshToken(nextRefreshToken),
           userAgent: session.userAgent ?? null,
           userId: session.userId
         }
-      })
-    ]);
+      });
 
-    return {
-      refreshToken: nextRefreshToken,
-      userId: session.userId
-    };
+      return {
+        refreshToken: nextRefreshToken,
+        userId: session.userId
+      };
+    });
+
+    return rotated;
   }
 
   async revoke(refreshToken: string): Promise<void> {

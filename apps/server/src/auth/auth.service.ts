@@ -2,6 +2,9 @@ import { Inject, Injectable } from "@nestjs/common";
 
 import {
   type AuthLoginRequest,
+  type AuthPasswordResetConfirmRequest,
+  type AuthPasswordResetRequest,
+  type AuthPasswordResetRequestResponse,
   type AuthRegisterRequest,
   type AuthSessionResponse,
   type AuthTokens,
@@ -9,6 +12,8 @@ import {
 } from "@linvo-ai/shared";
 
 import { ApiHttpException } from "../http-error";
+import type { AppConfig } from "../config/env.schema";
+import { APP_CONFIG } from "../config/env.schema";
 import { PrismaService } from "../prisma/prisma.service";
 import { PasswordService } from "./password.service";
 import { RefreshTokenService } from "./refresh-token.service";
@@ -19,6 +24,8 @@ export class AuthService {
   constructor(
     @Inject(PasswordService)
     private readonly passwordService: PasswordService,
+    @Inject(APP_CONFIG)
+    private readonly config: AppConfig,
     @Inject(PrismaService)
     private readonly prisma: PrismaService,
     @Inject(RefreshTokenService)
@@ -83,7 +90,7 @@ export class AuthService {
     });
 
     return {
-      accessToken: this.tokenService.createAccessToken({
+      accessToken: await this.tokenService.createAccessToken({
         email: user.email,
         id: user.id
       }),
@@ -94,6 +101,97 @@ export class AuthService {
 
   async logout(refreshToken: string): Promise<void> {
     await this.refreshTokenService.revoke(refreshToken);
+  }
+
+  async requestPasswordReset(
+    input: AuthPasswordResetRequest
+  ): Promise<AuthPasswordResetRequestResponse> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: input.email }
+    });
+
+    if (!user || user.status !== "active") {
+      return { status: "ok" };
+    }
+
+    const resetCode = this.tokenService.createPasswordResetCode();
+
+    await this.prisma.$transaction([
+      this.prisma.passwordResetToken.updateMany({
+        data: { usedAt: new Date() },
+        where: {
+          userId: user.id,
+          usedAt: null
+        }
+      }),
+      this.prisma.passwordResetToken.create({
+        data: {
+          expiresAt: this.tokenService.getPasswordResetTokenExpiry(),
+          tokenHash: this.tokenService.hashPasswordResetCode(resetCode),
+          userId: user.id
+        }
+      })
+    ]);
+
+    return this.config.NODE_ENV === "production"
+      ? { status: "ok" }
+      : { resetCode, status: "ok" };
+  }
+
+  async resetPassword(input: AuthPasswordResetConfirmRequest): Promise<void> {
+    const tokenHash = this.tokenService.hashPasswordResetCode(input.resetCode);
+    const resetToken = await this.prisma.passwordResetToken.findUnique({
+      include: { user: true },
+      where: { tokenHash }
+    });
+    const now = new Date();
+
+    if (
+      !resetToken ||
+      resetToken.usedAt ||
+      resetToken.expiresAt <= now ||
+      resetToken.user.status !== "active"
+    ) {
+      throw new ApiHttpException(
+        401,
+        "PASSWORD_RESET_TOKEN_INVALID",
+        "Link de redefinicao expirado ou invalido."
+      );
+    }
+
+    const passwordHash = await this.passwordService.hashPassword(input.password);
+
+    await this.prisma.$transaction(async (transaction) => {
+      const updated = await transaction.passwordResetToken.updateMany({
+        data: { usedAt: now },
+        where: {
+          expiresAt: { gt: now },
+          id: resetToken.id,
+          usedAt: null
+        }
+      });
+
+      if (updated.count !== 1) {
+        throw new ApiHttpException(
+          401,
+          "PASSWORD_RESET_TOKEN_INVALID",
+          "Link de redefinicao expirado ou invalido."
+        );
+      }
+
+      await transaction.user.update({
+        data: { passwordHash },
+        where: { id: resetToken.userId }
+      });
+
+      await transaction.refreshSession.updateMany({
+        data: { revokedAt: now },
+        where: {
+          revokedAt: null,
+          userId: resetToken.userId
+        }
+      });
+    });
   }
 
   async me(userId: string): Promise<AuthUser> {
@@ -110,7 +208,7 @@ export class AuthService {
 
   private async createTokens(user: { email: string; id: string }, userAgent?: string): Promise<AuthTokens> {
     return {
-      accessToken: this.tokenService.createAccessToken(user),
+      accessToken: await this.tokenService.createAccessToken(user),
       expiresIn: this.tokenService.accessTokenTtlSeconds,
       refreshToken: await this.refreshTokenService.issue(user.id, userAgent)
     };

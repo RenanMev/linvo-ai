@@ -5,6 +5,7 @@ import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 
 import { AppModule } from "./app.module";
+import { createCorsOrigin } from "./config/cors";
 import type { AppConfig } from "./config/env.schema";
 import { APP_CONFIG } from "./config/env.schema";
 
@@ -34,7 +35,7 @@ async function bootstrap(): Promise<void> {
   app.useBodyParser("json", { limit: "4mb" });
   app.useBodyParser("urlencoded", { extended: true, limit: "4mb" });
   app.enableCors({
-    origin: true
+    origin: createCorsOrigin(config)
   });
   await app.listen(config.PORT, "127.0.0.1");
 }

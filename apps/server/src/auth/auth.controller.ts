@@ -3,6 +3,8 @@ import { Body, Controller, Get, Headers, Inject, Post, Req, UseGuards } from "@n
 import {
   authLoginRequestSchema,
   authLogoutRequestSchema,
+  authPasswordResetConfirmRequestSchema,
+  authPasswordResetRequestSchema,
   authRefreshRequestSchema,
   authRegisterRequestSchema
 } from "@linvo-ai/shared";
@@ -49,6 +51,21 @@ export class AuthController {
   async logout(@Body() body: unknown) {
     const input = parseBody(authLogoutRequestSchema, body);
     await this.authService.logout(input.refreshToken);
+    return { status: "ok" as const };
+  }
+
+  @Post("password-reset/request")
+  requestPasswordReset(@Body() body: unknown) {
+    return this.authService.requestPasswordReset(
+      parseBody(authPasswordResetRequestSchema, body)
+    );
+  }
+
+  @Post("password-reset/confirm")
+  async resetPassword(@Body() body: unknown) {
+    await this.authService.resetPassword(
+      parseBody(authPasswordResetConfirmRequestSchema, body)
+    );
     return { status: "ok" as const };
   }
 

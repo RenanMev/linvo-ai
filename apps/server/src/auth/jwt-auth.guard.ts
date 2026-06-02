@@ -8,7 +8,7 @@ import { TokenService } from "./token.service";
 export class JwtAuthGuard implements CanActivate {
   constructor(@Inject(TokenService) private readonly tokenService: TokenService) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<{
       headers: Record<string, string | string[] | undefined>;
       user?: unknown;
@@ -18,7 +18,7 @@ export class JwtAuthGuard implements CanActivate {
     const token = authorization?.startsWith("Bearer ")
       ? authorization.slice("Bearer ".length)
       : "";
-    const user = token ? this.tokenService.verifyAccessToken(token) : null;
+    const user = token ? await this.tokenService.verifyAccessToken(token) : null;
 
     if (!user) {
       throw new ApiHttpException(401, "AUTH_REQUIRED", "Entre novamente para continuar.");
