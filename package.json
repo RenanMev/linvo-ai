@@ -13,6 +13,11 @@
     "test:e2e": "playwright test",
     "typecheck": "pnpm -r typecheck"
   },
+  "pnpm": {
+    "overrides": {
+      "@hono/node-server": "1.19.13"
+    }
+  },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
     "typescript": "^5.9.3"

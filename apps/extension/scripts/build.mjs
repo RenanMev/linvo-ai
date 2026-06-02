@@ -1,53 +1,80 @@
-import { mkdir, copyFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { context, build } from "esbuild";
+import { build } from "vite";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outdir = resolve(root, "dist");
+const configFile = resolve(root, "vite.config.ts");
 const watch = process.argv.includes("--watch");
-
-const shared = {
-  bundle: true,
-  format: "esm",
-  logLevel: "info",
-  platform: "browser",
-  sourcemap: true,
-  target: "chrome120"
-};
 
 async function copyStatic() {
   await mkdir(outdir, { recursive: true });
   await copyFile(resolve(root, "public", "manifest.json"), resolve(outdir, "manifest.json"));
-  await copyFile(resolve(root, "src", "sidepanel", "index.html"), resolve(outdir, "sidepanel.html"));
-  await copyFile(resolve(root, "src", "styles", "globals.css"), resolve(outdir, "sidepanel.css"));
-  await writeFile(resolve(outdir, "content.css"), "");
+  await copyFile(resolve(root, "sidepanel.html"), resolve(outdir, "sidepanel.html"));
+}
+
+function assetFileNames(assetInfo) {
+  return assetInfo.names?.some((name) => name.endsWith(".css")) || assetInfo.name?.endsWith(".css")
+    ? "linvo-ui.css"
+    : "assets/[name]-[hash][extname]";
+}
+
+async function buildEntry({ emptyOutDir, entry, fileName, format, name }) {
+  return build({
+    configFile,
+    build: {
+      cssCodeSplit: false,
+      emptyOutDir,
+      lib: {
+        entry,
+        fileName: () => fileName,
+        formats: [format],
+        name
+      },
+      outDir: outdir,
+      rollupOptions: {
+        output: {
+          assetFileNames,
+          entryFileNames: fileName
+        }
+      },
+      watch: watch ? {} : null
+    }
+  });
 }
 
 async function run() {
-  await copyStatic();
-  const entryPoints = {
-    background: resolve(root, "src", "background", "index.ts"),
-    content: resolve(root, "src", "content", "index.ts"),
-    sidepanel: resolve(root, "src", "sidepanel", "index.tsx")
-  };
-
-  if (watch) {
-    const buildContext = await context({
-      ...shared,
-      entryPoints,
-      outdir
-    });
-    await buildContext.watch();
-    console.log("Linvo AI extension build watching...");
-    return;
+  if (!watch) {
+    await rm(outdir, { force: true, recursive: true });
   }
 
-  await build({
-    ...shared,
-    entryPoints,
-    outdir
+  await buildEntry({
+    emptyOutDir: true,
+    entry: resolve(root, "src", "sidepanel", "index.tsx"),
+    fileName: "sidepanel.js",
+    format: "es",
+    name: "LinvoAiSidepanel"
   });
+  await buildEntry({
+    emptyOutDir: false,
+    entry: resolve(root, "src", "content", "index.ts"),
+    fileName: "content.js",
+    format: "iife",
+    name: "LinvoAiContent"
+  });
+  await buildEntry({
+    emptyOutDir: false,
+    entry: resolve(root, "src", "background", "index.ts"),
+    fileName: "background.js",
+    format: "es",
+    name: "LinvoAiBackground"
+  });
+  await copyStatic();
+
+  if (watch) {
+    console.log("Linvo AI extension build watching...");
+  }
 }
 
 void run().catch((error) => {
