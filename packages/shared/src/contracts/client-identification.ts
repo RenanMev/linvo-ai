@@ -170,6 +170,7 @@ export const pendingClientSummarySchema = z.object({
 export const bulkClientIdentificationCandidateSchema = z.object({
   case: pendingClientCaseSchema,
   confidence: z.number().min(0).max(1),
+  customerId: z.string().uuid().optional(),
   displayName: z.string().trim().min(1).max(160).optional(),
   evidence: z.array(z.string().trim().min(1).max(MAX_EVIDENCE_CHARS)).default([]),
   maskedIdentifiers: pendingClientSummarySchema.shape.maskedIdentifiers,

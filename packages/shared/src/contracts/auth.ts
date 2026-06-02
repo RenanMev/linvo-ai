@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   MAX_EMAIL_CHARS,
   MAX_NAME_CHARS,
+  PASSWORD_RESET_CODE_CHARS,
   MIN_PASSWORD_CHARS
 } from "../limits";
 import { apiErrorResponseSchema } from "./errors";
@@ -48,6 +49,15 @@ export const authRefreshRequestSchema = z.object({
 
 export const authLogoutRequestSchema = authRefreshRequestSchema;
 
+export const authPasswordResetRequestSchema = z.object({
+  email: emailSchema
+});
+
+export const authPasswordResetConfirmRequestSchema = z.object({
+  password: passwordSchema,
+  resetCode: z.string().trim().regex(/^\d{6}$/)
+});
+
 export const authSessionResponseSchema = z.object({
   status: z.literal("ok"),
   tokens: authTokensSchema,
@@ -68,10 +78,16 @@ export const authOkResponseSchema = z.object({
   status: z.literal("ok")
 });
 
+export const authPasswordResetRequestResponseSchema = z.object({
+  resetCode: z.string().trim().length(PASSWORD_RESET_CODE_CHARS).optional(),
+  status: z.literal("ok")
+});
+
 export const authApiResponseSchema = z.union([
   authSessionResponseSchema,
   authRefreshResponseSchema,
   authMeResponseSchema,
+  authPasswordResetRequestResponseSchema,
   authOkResponseSchema,
   apiErrorResponseSchema
 ]);
@@ -81,5 +97,12 @@ export type AuthTokens = z.infer<typeof authTokensSchema>;
 export type AuthRegisterRequest = z.infer<typeof authRegisterRequestSchema>;
 export type AuthLoginRequest = z.infer<typeof authLoginRequestSchema>;
 export type AuthRefreshRequest = z.infer<typeof authRefreshRequestSchema>;
+export type AuthPasswordResetRequest = z.infer<typeof authPasswordResetRequestSchema>;
+export type AuthPasswordResetConfirmRequest = z.infer<
+  typeof authPasswordResetConfirmRequestSchema
+>;
+export type AuthPasswordResetRequestResponse = z.infer<
+  typeof authPasswordResetRequestResponseSchema
+>;
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>;
 export type AuthApiResponse = z.infer<typeof authApiResponseSchema>;

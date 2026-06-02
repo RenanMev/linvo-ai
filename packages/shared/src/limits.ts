@@ -1,5 +1,6 @@
 export const MAX_EMAIL_CHARS = 254;
 export const MIN_PASSWORD_CHARS = 8;
+export const PASSWORD_RESET_CODE_CHARS = 6;
 export const MAX_NAME_CHARS = 120;
 export const MAX_PAGE_TITLE_CHARS = 300;
 export const MAX_URL_CHARS = 2_048;
@@ -16,4 +17,5 @@ export const MAX_SCREENSHOT_DATA_URL_CHARS = 1_800_000;
 export const MAX_BULK_IDENTIFICATION_ITEMS = 50;
 export const MAX_BULK_ROW_TEXT_CHARS = 500;
 export const MAX_BULK_CONTAINER_TEXT_CHARS = 8_000;
+export const MAX_CUSTOMER_NOTES_CHARS = 4_000;
 export const DEFAULT_IDENTIFICATION_CONFIDENCE_MIN = 0.72;

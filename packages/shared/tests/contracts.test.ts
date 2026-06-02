@@ -1,11 +1,21 @@
 import {
   authLoginRequestSchema,
+  authPasswordResetConfirmRequestSchema,
+  authPasswordResetRequestResponseSchema,
+  authPasswordResetRequestSchema,
   authRegisterRequestSchema,
   bulkClientIdentificationDecisionRequestSchema,
   bulkClientIdentificationRequestSchema,
   bulkClientIdentificationResponseSchema,
+  clientInfoOpenApiResponseSchema,
+  clientInfoOpenRequestSchema,
   clientIdentificationRequestSchema,
-  clientIdentificationSuccessResponseSchema
+  clientIdentificationSuccessResponseSchema,
+  customerDeleteRequestSchema,
+  customerDeleteResponseSchema,
+  customerUpdateRequestSchema,
+  customerUpdateResponseSchema,
+  customersListResponseSchema
 } from "../src";
 
 describe("shared contracts", () => {
@@ -24,6 +34,28 @@ describe("shared contracts", () => {
         password: "123"
       }).success
     ).toBe(false);
+  });
+
+  it("validates password reset payloads", () => {
+    expect(
+      authPasswordResetRequestSchema.parse({
+        email: "USER@Example.COM"
+      }).email
+    ).toBe("user@example.com");
+
+    expect(
+      authPasswordResetConfirmRequestSchema.safeParse({
+        password: "12345678",
+        resetCode: "123456"
+      }).success
+    ).toBe(true);
+
+    expect(
+      authPasswordResetRequestResponseSchema.parse({
+        resetCode: "123456",
+        status: "ok"
+      }).resetCode
+    ).toBe("123456");
   });
 
   it("validates client identification requests", () => {
@@ -60,6 +92,59 @@ describe("shared contracts", () => {
         warnings: ["Nao confirmado"]
       }).success
     ).toBe(true);
+  });
+
+  it("validates client info open request and responses", () => {
+    const customer = {
+      cases: [],
+      displayName: "Renan Devs",
+      domain: "painel.nvoip.com.br",
+      id: "11111111-1111-4111-8111-111111111111",
+      lastSeenAt: "2026-06-01T12:00:00.000Z",
+      maskedIdentifiers: { protocol: "10703030" }
+    };
+    const request = clientInfoOpenRequestSchema.parse({
+      capturedAt: new Date().toISOString(),
+      pageText: "Atendimento aberto para Renan Devs protocolo 10703030",
+      pageTitle: "Painel Nvoip",
+      requestId: "info-1",
+      url: "https://painel.nvoip.com.br/atendimento/10703030"
+    });
+
+    expect(request.pageText).toContain("Renan Devs");
+    expect(
+      clientInfoOpenApiResponseSchema.safeParse({
+        confidence: 0.85,
+        customer,
+        customers: [customer],
+        domain: "painel.nvoip.com.br",
+        evidence: ["Nome e protocolo aparecem na pagina."],
+        requestId: "info-1",
+        source: "llm",
+        status: "ok"
+      }).success
+    ).toBe(true);
+    expect(
+      clientInfoOpenApiResponseSchema.safeParse({
+        customers: [customer],
+        domain: "painel.nvoip.com.br",
+        reason: "Nenhum cliente corresponde.",
+        requestId: "info-1",
+        status: "no_match"
+      }).success
+    ).toBe(true);
+    expect(
+      clientInfoOpenApiResponseSchema.safeParse({
+        confidence: 0.67,
+        customer,
+        customers: [customer],
+        domain: "painel.nvoip.com.br",
+        evidence: [],
+        requestId: "info-1",
+        source: "llm",
+        status: "ok"
+      }).success
+    ).toBe(false);
   });
 
   it("validates bulk identification request and response payloads", () => {
@@ -115,5 +200,70 @@ describe("shared contracts", () => {
         rejectRequestIds: []
       }).acceptRequestIds
     ).toEqual(["bulk-item-1"]);
+  });
+
+  it("validates customer delete payloads", () => {
+    expect(
+      customerDeleteRequestSchema.parse({
+        customerId: "11111111-1111-4111-8111-111111111111"
+      }).customerId
+    ).toBe("11111111-1111-4111-8111-111111111111");
+
+    expect(
+      customerDeleteResponseSchema.safeParse({
+        customerId: "11111111-1111-4111-8111-111111111111",
+        domain: "crm.example.com",
+        recentCustomers: [],
+        status: "ok"
+      }).success
+    ).toBe(true);
+  });
+
+  it("validates customer list and update payloads", () => {
+    const customer = {
+      cases: [],
+      displayName: "Renan Devs",
+      domain: "painel.nvoip.com.br",
+      id: "11111111-1111-4111-8111-111111111111",
+      lastSeenAt: "2026-06-01T12:00:00.000Z",
+      maskedIdentifiers: { protocol: "10703030" },
+      notes: "Cliente prefere contato por WhatsApp."
+    };
+
+    expect(
+      customersListResponseSchema.safeParse({
+        customers: [customer],
+        status: "ok"
+      }).success
+    ).toBe(true);
+
+    expect(
+      customerUpdateRequestSchema.safeParse({
+        customerId: customer.id,
+        case: {
+          caseId: "22222222-2222-4222-8222-222222222222",
+          protocol: "10703031",
+          status: "Em andamento",
+          subject: "Suporte tecnico"
+        },
+        displayName: "Renan Devs Atualizado",
+        maskedIdentifiers: {
+          document: "***.***.***-11",
+          email: "re***@example.com",
+          phone: "(55) *****-3122",
+          protocol: "10703031"
+        },
+        notes: "Nova observacao"
+      }).success
+    ).toBe(true);
+
+    expect(
+      customerUpdateResponseSchema.safeParse({
+        customer,
+        customers: [customer],
+        domain: "painel.nvoip.com.br",
+        status: "ok"
+      }).success
+    ).toBe(true);
   });
 });
