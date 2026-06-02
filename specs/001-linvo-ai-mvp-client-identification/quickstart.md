@@ -14,7 +14,7 @@ Create `apps/server/.env` from `.env.example` after scaffold:
 
 ```env
 PORT=8791
-DATABASE_URL=postgresql://linvo_ai:linvo_ai_dev@127.0.0.1:54329/linvo_ai
+DATABASE_URL=replace_with-local-server-db
 JWT_ACCESS_SECRET=replace-with-local-secret
 JWT_REFRESH_SECRET=replace-with-local-secret
 PASSWORD_PEPPER=replace-with-local-secret
@@ -51,6 +51,7 @@ pnpm dev
 3. Close and reopen sidepanel.
 
 Expected:
+
 - Session restores without entering password again.
 - `GET /auth/me` succeeds.
 
@@ -62,6 +63,7 @@ Expected:
 4. Select the visible card/conversation for `Cliente A`.
 
 Expected:
+
 - Toast shows `Identificando cliente...` then `Cliente identificado.`
 - Sidepanel shows `Cliente A`.
 - Backend creates one `Customer`, one `CustomerCase` and one `IdentificationRun`.
@@ -72,6 +74,7 @@ Expected:
 2. Select the active `Cliente A` conversation.
 
 Expected:
+
 - Response marks `Cliente A` as active.
 - No record is created for `Cliente B`.
 
@@ -81,6 +84,7 @@ Expected:
 2. Press `Escape`.
 
 Expected:
+
 - Overlay disappears.
 - Toast shows cancellation.
 - No network request is sent to `/assist/client-identification`.
@@ -91,6 +95,7 @@ Expected:
 2. Select the generic container.
 
 Expected:
+
 - API returns `saved: false`.
 - Sidepanel shows `Cliente nao confirmado`.
 - Database does not create `Customer` or `CustomerCase`.

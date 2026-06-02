@@ -1,37 +1,40 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { createHmac } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 
 import {
-  aiClientIdentificationResultSchema,
   canonicalizeProtocol,
-  chooseCanonicalIdentity,
-  maskDocument,
-  maskEmail,
-  maskPhone,
   redactSensitiveText,
   type AiClientIdentificationResult,
   type ClientIdentificationRequest,
   type CustomerCaseSummary,
   type CustomerSummary,
-  type MaskedIdentifiers,
   type PendingClientSummary
 } from "@linvo-ai/shared";
 
 import type { AppConfig } from "../config/env.schema";
 import { APP_CONFIG } from "../config/env.schema";
 import { PrismaService } from "../prisma/prisma.service";
+import {
+  buildDomSignature,
+  buildMaskedIdentifiers,
+  hashWithSecret,
+  isDecidableConfirmationStatus,
+  parseAiIdentificationResult,
+  parseDomSignature,
+  parseMaskedIdentifiers,
+  resolveIdentity,
+  toCaseSummary,
+  toCustomerSummary,
+  toJsonValue,
+  toPendingClient,
+  type ConfirmationStatusValue,
+  type DomSignature
+} from "./identification-domain";
 
-interface DomSignature {
-  anchorText?: string;
-  ariaLabel?: string;
-  candidateLabels: string[];
-  identifierText?: string;
-  nameText?: string;
-  nearbyHeadings: string[];
-  selectedRole?: string;
-  selectedTag: string;
-  tokens: string[];
-}
+type CustomerPersistenceClient = Pick<
+  Prisma.TransactionClient,
+  "customer" | "customerCase" | "customerDomPattern" | "identificationRun"
+>;
 
 interface ConfirmedIdentificationInput {
   aiResult: AiClientIdentificationResult;
@@ -40,6 +43,7 @@ interface ConfirmedIdentificationInput {
   confirmationStatus: "accepted" | "known";
   domain: string;
   durationMs: number | null;
+  existingCustomerId?: string;
   request: ClientIdentificationRequest;
   userId: string;
 }
@@ -48,6 +52,7 @@ interface ConfirmedGraphInput {
   aiResult: AiClientIdentificationResult;
   domain: string;
   domSignature: DomSignature;
+  existingCustomerId?: string;
   userId: string;
 }
 
@@ -55,7 +60,7 @@ interface RunWriteInput {
   aiResult: AiClientIdentificationResult;
   bulkBatchId?: string;
   bulkItemIndex?: number;
-  confirmationStatus: string;
+  confirmationStatus: ConfirmationStatusValue;
   confirmedAt?: Date;
   customerCaseId?: string | null;
   customerId?: string | null;
@@ -67,46 +72,84 @@ interface RunWriteInput {
   userId: string;
 }
 
-function hashWithSecret(secret: string, value: string): string {
-  return createHmac("sha256", secret).update(value).digest("base64url");
+interface CustomerUpdateCaseInput {
+  caseId?: string | undefined;
+  protocol?: string | undefined;
+  status?: string | undefined;
+  subject?: string | undefined;
 }
 
-function toIso(value: Date): string {
-  return value.toISOString();
+interface CustomerUpdateIdentifiersInput {
+  document?: string | undefined;
+  email?: string | undefined;
+  phone?: string | undefined;
+  protocol?: string | undefined;
 }
 
-function compact(value: string | null | undefined, max: number): string | undefined {
-  const cleaned = redactSensitiveText(value ?? "").replace(/\s+/g, " ").trim();
-  return cleaned ? cleaned.slice(0, max) : undefined;
+export class IdentificationDecisionConflictError extends Error {
+  constructor() {
+    super("Identification run has already been decided.");
+  }
 }
 
-function extractTokens(values: Array<string | undefined>): string[] {
-  const seen = new Set<string>();
-  const tokens: string[] = [];
-
-  for (const value of values) {
-    const matches = value?.match(/[\p{L}\p{N}][\p{L}\p{N}._-]{2,}/gu) ?? [];
-
-    for (const match of matches) {
-      const token = match.trim();
-      const key = token.toLowerCase();
-
-      if (!seen.has(key)) {
-        seen.add(key);
-        tokens.push(token.slice(0, 60));
-      }
-
-      if (tokens.length >= 18) {
-        return tokens;
-      }
-    }
+function cleanOptionalText(value: string | undefined): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
   }
 
-  return tokens;
+  const cleaned = value.trim();
+  return cleaned || null;
 }
 
-function firstValue(values: Array<string | undefined>): string | undefined {
-  return values.find((value) => value && value.trim());
+function mergeMaskedIdentifiers(
+  currentValue: unknown,
+  updates: CustomerUpdateIdentifiersInput | undefined
+) {
+  if (!updates) {
+    return undefined;
+  }
+
+  const current = parseMaskedIdentifiers(currentValue);
+  const next = { ...current };
+
+  for (const key of ["document", "email", "phone", "protocol"] as const) {
+    const value = cleanOptionalText(updates[key]);
+
+    if (value === undefined) {
+      continue;
+    }
+
+    if (value === null) {
+      delete next[key];
+      continue;
+    }
+
+    next[key] = value;
+  }
+
+  return next;
+}
+
+function mergeAiMaskedIdentifiers(
+  currentValue: unknown,
+  aiResult: AiClientIdentificationResult
+) {
+  return {
+    ...parseMaskedIdentifiers(currentValue),
+    ...buildMaskedIdentifiers(aiResult)
+  };
+}
+
+function hasCaseUpdates(input: CustomerUpdateCaseInput | undefined): input is CustomerUpdateCaseInput {
+  return Boolean(
+    input &&
+      (
+        input.caseId ||
+        input.protocol !== undefined ||
+        input.status !== undefined ||
+        input.subject !== undefined
+      )
+  );
 }
 
 @Injectable()
@@ -118,28 +161,11 @@ export class CustomerRepository {
   ) {}
 
   canPersistCandidate(aiResult: AiClientIdentificationResult, context: string): boolean {
-    return this.resolveIdentity(aiResult, context).kind !== "unknown";
+    return resolveIdentity(aiResult, context).kind !== "unknown";
   }
 
   toPendingClient(aiResult: AiClientIdentificationResult): PendingClientSummary | null {
-    if (!aiResult.activeClient) {
-      return null;
-    }
-
-    const maskedIdentifiers = this.buildMaskedIdentifiers(aiResult);
-    const pendingCase = aiResult.case
-      ? {
-          ...(aiResult.case.protocol ? { protocol: aiResult.case.protocol } : {}),
-          ...(aiResult.case.status ? { status: aiResult.case.status } : {}),
-          ...(aiResult.case.subject ? { subject: aiResult.case.subject } : {})
-        }
-      : null;
-
-    return {
-      case: pendingCase && Object.keys(pendingCase).length ? pendingCase : null,
-      ...(aiResult.activeClient.name ? { displayName: aiResult.activeClient.name } : {}),
-      maskedIdentifiers
-    };
+    return toPendingClient(aiResult);
   }
 
   async findExistingCustomer(
@@ -148,7 +174,7 @@ export class CustomerRepository {
     aiResult: AiClientIdentificationResult,
     context: string
   ): Promise<CustomerSummary | null> {
-    const identity = this.resolveIdentity(aiResult, context);
+    const identity = resolveIdentity(aiResult, context);
 
     if (identity.kind === "unknown") {
       return null;
@@ -173,7 +199,7 @@ export class CustomerRepository {
       }
     });
 
-    return customer ? this.toCustomerSummary(customer) : null;
+    return customer ? toCustomerSummary(customer) : null;
   }
 
   async savePendingIdentification(input: {
@@ -186,7 +212,7 @@ export class CustomerRepository {
     request: ClientIdentificationRequest;
     userId: string;
   }): Promise<void> {
-    const domSignature = this.buildDomSignature(input.request, input.aiResult);
+    const domSignature = buildDomSignature(input.request, input.aiResult);
     await this.writeRun({
       aiResult: input.aiResult,
       ...(input.bulkBatchId ? { bulkBatchId: input.bulkBatchId } : {}),
@@ -205,30 +231,39 @@ export class CustomerRepository {
     caseSummary: CustomerCaseSummary | null;
     customerSummary: CustomerSummary | null;
   }> {
-    const domSignature = this.buildDomSignature(input.request, input.aiResult);
-    const { caseSummary, customerSummary } = await this.upsertConfirmedGraph({
-      aiResult: input.aiResult,
-      domain: input.domain,
-      domSignature,
-      userId: input.userId
-    });
+    return this.prisma.$transaction(async (transaction) => {
+      const domSignature = buildDomSignature(input.request, input.aiResult);
+      const { caseSummary, customerSummary } = await this.upsertConfirmedGraph(
+        {
+          aiResult: input.aiResult,
+          domain: input.domain,
+          domSignature,
+          ...(input.existingCustomerId ? { existingCustomerId: input.existingCustomerId } : {}),
+          userId: input.userId
+        },
+        transaction
+      );
 
-    await this.writeRun({
-      aiResult: input.aiResult,
-      ...(input.bulkBatchId ? { bulkBatchId: input.bulkBatchId } : {}),
-      ...(typeof input.bulkItemIndex === "number" ? { bulkItemIndex: input.bulkItemIndex } : {}),
-      confirmationStatus: input.confirmationStatus,
-      customerCaseId: caseSummary?.id ?? null,
-      customerId: customerSummary?.id ?? null,
-      domain: input.domain,
-      domSignature,
-      durationMs: input.durationMs,
-      request: input.request,
-      saved: Boolean(customerSummary),
-      userId: input.userId
-    });
+      await this.writeRun(
+        {
+          aiResult: input.aiResult,
+          ...(input.bulkBatchId ? { bulkBatchId: input.bulkBatchId } : {}),
+          ...(typeof input.bulkItemIndex === "number" ? { bulkItemIndex: input.bulkItemIndex } : {}),
+          confirmationStatus: input.confirmationStatus,
+          customerCaseId: caseSummary?.id ?? null,
+          customerId: customerSummary?.id ?? null,
+          domain: input.domain,
+          domSignature,
+          durationMs: input.durationMs,
+          request: input.request,
+          saved: Boolean(customerSummary),
+          userId: input.userId
+        },
+        transaction
+      );
 
-    return { caseSummary, customerSummary };
+      return { caseSummary, customerSummary };
+    });
   }
 
   async decidePendingIdentification(input: {
@@ -240,71 +275,9 @@ export class CustomerRepository {
     domain: string;
     saved: boolean;
   } | null> {
-    const run = await this.prisma.identificationRun.findUnique({
-      where: {
-        userId_requestId: {
-          requestId: input.requestId,
-          userId: input.userId
-        }
-      }
-    });
-
-    if (!run) {
-      return null;
-    }
-
-    if (input.decision === "reject") {
-      await this.prisma.identificationRun.update({
-        data: {
-          confirmationStatus: "rejected",
-          confirmedAt: new Date(),
-          saved: false
-        },
-        where: {
-          userId_requestId: {
-            requestId: input.requestId,
-            userId: input.userId
-          }
-        }
-      });
-
-      return {
-        activeClient: null,
-        domain: run.domain,
-        saved: false
-      };
-    }
-
-    const aiResult = aiClientIdentificationResultSchema.parse(run.candidateJson);
-    const domSignature = this.parseDomSignature(run.domSignatureJson);
-    const { caseSummary, customerSummary } = await this.upsertConfirmedGraph({
-      aiResult,
-      domain: run.domain,
-      domSignature,
-      userId: input.userId
-    });
-
-    await this.prisma.identificationRun.update({
-      data: {
-        confirmationStatus: "accepted",
-        confirmedAt: new Date(),
-        customerCaseId: caseSummary?.id ?? null,
-        customerId: customerSummary?.id ?? null,
-        saved: Boolean(customerSummary)
-      },
-      where: {
-        userId_requestId: {
-          requestId: input.requestId,
-          userId: input.userId
-        }
-      }
-    });
-
-    return {
-      activeClient: customerSummary,
-      domain: run.domain,
-      saved: Boolean(customerSummary)
-    };
+    return this.prisma.$transaction((transaction) =>
+      this.decidePendingIdentificationWithClient(transaction, input)
+    );
   }
 
   async decideBulkIdentification(input: {
@@ -318,63 +291,65 @@ export class CustomerRepository {
     rejectedCount: number;
     savedCustomers: CustomerSummary[];
   } | null> {
-    const runs = await this.prisma.identificationRun.findMany({
-      orderBy: { bulkItemIndex: "asc" },
-      where: {
-        bulkBatchId: input.batchId,
-        userId: input.userId
+    return this.prisma.$transaction(async (transaction) => {
+      const runs = await transaction.identificationRun.findMany({
+        orderBy: { bulkItemIndex: "asc" },
+        where: {
+          bulkBatchId: input.batchId,
+          userId: input.userId
+        }
+      });
+
+      if (!runs.length) {
+        return null;
       }
+
+      const runIds = new Set(runs.map((run) => run.requestId));
+      const acceptIds = new Set(input.acceptRequestIds.filter((requestId) => runIds.has(requestId)));
+      const rejectIds = new Set(
+        input.rejectRequestIds.filter(
+          (requestId) => runIds.has(requestId) && !acceptIds.has(requestId)
+        )
+      );
+      const savedCustomers: CustomerSummary[] = [];
+      let acceptedCount = 0;
+      let rejectedCount = 0;
+
+      for (const requestId of acceptIds) {
+        const decision = await this.decidePendingIdentificationWithClient(transaction, {
+          decision: "accept",
+          requestId,
+          userId: input.userId
+        });
+
+        if (decision?.saved && decision.activeClient) {
+          savedCustomers.push(decision.activeClient);
+          acceptedCount += 1;
+        }
+      }
+
+      for (const requestId of rejectIds) {
+        const decision = await this.decidePendingIdentificationWithClient(transaction, {
+          decision: "reject",
+          requestId,
+          userId: input.userId
+        });
+
+        if (decision) {
+          rejectedCount += 1;
+        }
+      }
+
+      return {
+        acceptedCount,
+        domain: runs[0]?.domain ?? "",
+        rejectedCount,
+        savedCustomers
+      };
     });
-
-    if (!runs.length) {
-      return null;
-    }
-
-    const runIds = new Set(runs.map((run) => run.requestId));
-    const acceptIds = new Set(input.acceptRequestIds.filter((requestId) => runIds.has(requestId)));
-    const rejectIds = new Set(
-      input.rejectRequestIds.filter(
-        (requestId) => runIds.has(requestId) && !acceptIds.has(requestId)
-      )
-    );
-    const savedCustomers: CustomerSummary[] = [];
-    let acceptedCount = 0;
-    let rejectedCount = 0;
-
-    for (const requestId of acceptIds) {
-      const decision = await this.decidePendingIdentification({
-        decision: "accept",
-        requestId,
-        userId: input.userId
-      });
-
-      if (decision?.saved && decision.activeClient) {
-        savedCustomers.push(decision.activeClient);
-        acceptedCount += 1;
-      }
-    }
-
-    for (const requestId of rejectIds) {
-      const decision = await this.decidePendingIdentification({
-        decision: "reject",
-        requestId,
-        userId: input.userId
-      });
-
-      if (decision) {
-        rejectedCount += 1;
-      }
-    }
-
-    return {
-      acceptedCount,
-      domain: runs[0]?.domain ?? "",
-      rejectedCount,
-      savedCustomers
-    };
   }
 
-  async listRecentCustomers(userId: string, domain: string): Promise<CustomerSummary[]> {
+  async listRecentCustomers(userId: string, domain?: string): Promise<CustomerSummary[]> {
     const customers = await this.prisma.customer.findMany({
       include: {
         cases: {
@@ -383,61 +358,381 @@ export class CustomerRepository {
         }
       },
       orderBy: { lastSeenAt: "desc" },
-      take: 20,
-      where: { domain, userId }
+      take: 100,
+      where: {
+        ...(domain ? { domain } : {}),
+        userId
+      }
     });
 
-    return customers.map((customer) => this.toCustomerSummary(customer));
+    return customers.map((customer) => toCustomerSummary(customer));
   }
 
-  private async upsertConfirmedGraph(input: ConfirmedGraphInput): Promise<{
-    caseSummary: CustomerCaseSummary | null;
-    customerSummary: CustomerSummary | null;
-  }> {
-    if (!input.aiResult.activeClient) {
-      return { caseSummary: null, customerSummary: null };
+  async updateCustomer(input: {
+    case?: CustomerUpdateCaseInput;
+    customerId: string;
+    displayName?: string;
+    maskedIdentifiers?: CustomerUpdateIdentifiersInput;
+    notes?: string;
+    userId: string;
+  }): Promise<{ customer: CustomerSummary; domain: string } | null> {
+    const customer = await this.prisma.customer.findFirst({
+      select: {
+        domain: true,
+        id: true,
+        maskedIdentifiers: true
+      },
+      where: {
+        id: input.customerId,
+        userId: input.userId
+      }
+    });
+
+    if (!customer) {
+      return null;
     }
 
-    const identity = this.resolveIdentity(input.aiResult, input.domSignature.anchorText ?? "");
-
-    if (identity.kind === "unknown") {
-      return { caseSummary: null, customerSummary: null };
-    }
-
-    const identityHash = hashWithSecret(
-      this.config.IDENTITY_HASH_SECRET,
-      `${identity.kind}:${identity.value}`
+    const maskedIdentifiers = mergeMaskedIdentifiers(
+      customer.maskedIdentifiers,
+      input.maskedIdentifiers
     );
-    const maskedIdentifiers = this.buildMaskedIdentifiers(input.aiResult);
-    const customer = await this.prisma.customer.upsert({
+    const updated = await this.prisma.$transaction(async (transaction) => {
+      const data: Prisma.CustomerUpdateInput = {};
+
+      if (hasCaseUpdates(input.case)) {
+        await this.updateCustomerCase(transaction, {
+          customerId: customer.id,
+          domain: customer.domain,
+          input: input.case,
+          userId: input.userId
+        });
+      }
+
+      if (input.displayName !== undefined) {
+        const displayName = cleanOptionalText(input.displayName);
+
+        if (displayName !== undefined) {
+          data.displayName = displayName;
+        }
+      }
+
+      if (maskedIdentifiers !== undefined) {
+        data.maskedIdentifiers = toJsonValue(maskedIdentifiers);
+      }
+
+      if (input.notes !== undefined) {
+        data.notes = input.notes.trim() || null;
+      }
+
+      await transaction.customer.update({
+        data,
+        where: { id: customer.id }
+      });
+
+      return transaction.customer.findUniqueOrThrow({
+        include: {
+          cases: {
+            orderBy: { lastSeenAt: "desc" },
+            take: 5
+          }
+        },
+        where: { id: customer.id }
+      });
+    });
+
+    return {
+      customer: toCustomerSummary(updated),
+      domain: updated.domain
+    };
+  }
+
+  private async updateCustomerCase(
+    client: Pick<Prisma.TransactionClient, "customerCase">,
+    input: {
+      customerId: string;
+      domain: string;
+      input: CustomerUpdateCaseInput;
+      userId: string;
+    }
+  ): Promise<void> {
+    const protocolDisplay = cleanOptionalText(input.input.protocol);
+    const statusDisplay = cleanOptionalText(input.input.status);
+    const subjectDisplay = cleanOptionalText(input.input.subject);
+
+    if (input.input.caseId) {
+      const existing = await client.customerCase.findFirst({
+        select: { id: true },
+        where: {
+          customerId: input.customerId,
+          id: input.input.caseId,
+          userId: input.userId
+        }
+      });
+
+      if (!existing) {
+        return;
+      }
+
+      await client.customerCase.update({
+        data: {
+          ...(protocolDisplay !== undefined ? { protocolDisplay } : {}),
+          ...(statusDisplay !== undefined ? { statusDisplay } : {}),
+          ...(subjectDisplay !== undefined ? { subjectDisplay } : {})
+        },
+        where: { id: existing.id }
+      });
+      return;
+    }
+
+    const caseKey = [
+      protocolDisplay,
+      subjectDisplay,
+      statusDisplay,
+      input.customerId
+    ].find((value) => value && value.trim()) ?? input.customerId;
+    const caseHash = hashWithSecret(this.config.IDENTITY_HASH_SECRET, caseKey);
+
+    await client.customerCase.upsert({
       create: {
-        confidence: input.aiResult.confidence,
-        displayName: input.aiResult.activeClient.name ?? null,
+        caseHash,
+        caseKind: protocolDisplay ? "protocol" : "subject_context",
+        confidence: 1,
+        customerId: input.customerId,
         domain: input.domain,
-        identityHash,
-        identityKind: identity.kind,
         lastSeenAt: new Date(),
-        maskedIdentifiers,
+        protocolDisplay: protocolDisplay ?? null,
+        statusDisplay: statusDisplay ?? null,
+        subjectDisplay: subjectDisplay ?? null,
         userId: input.userId
       },
       update: {
-        confidence: input.aiResult.confidence,
-        displayName: input.aiResult.activeClient.name ?? null,
-        lastSeenAt: new Date(),
-        maskedIdentifiers
+        customerId: input.customerId,
+        ...(protocolDisplay !== undefined ? { protocolDisplay } : {}),
+        ...(statusDisplay !== undefined ? { statusDisplay } : {}),
+        ...(subjectDisplay !== undefined ? { subjectDisplay } : {})
       },
       where: {
-        userId_domain_identityHash: {
+        userId_domain_caseHash: {
+          caseHash,
           domain: input.domain,
-          identityHash,
+          userId: input.userId
+        }
+      }
+    });
+  }
+
+  async deleteCustomer(input: {
+    customerId: string;
+    userId: string;
+  }): Promise<{ domain: string } | null> {
+    const customer = await this.prisma.customer.findFirst({
+      select: { domain: true, id: true },
+      where: {
+        id: input.customerId,
+        userId: input.userId
+      }
+    });
+
+    if (!customer) {
+      return null;
+    }
+
+    await this.prisma.customer.delete({
+      where: { id: customer.id }
+    });
+
+    return { domain: customer.domain };
+  }
+
+  private async decidePendingIdentificationWithClient(
+    client: CustomerPersistenceClient,
+    input: {
+      decision: "accept" | "reject";
+      requestId: string;
+      userId: string;
+    }
+  ): Promise<{
+    activeClient: CustomerSummary | null;
+    domain: string;
+    saved: boolean;
+  } | null> {
+    const run = await client.identificationRun.findUnique({
+      where: {
+        userId_requestId: {
+          requestId: input.requestId,
           userId: input.userId
         }
       }
     });
 
-    const customerSummary = this.toCustomerSummary({ ...customer, cases: [] });
-    const caseSummary = await this.upsertCase(input, customer.id, identity.value);
-    await this.upsertDomPattern(input, customer.id);
+    if (!run) {
+      return null;
+    }
+
+    if (!isDecidableConfirmationStatus(run.confirmationStatus)) {
+      throw new IdentificationDecisionConflictError();
+    }
+
+    const confirmedAt = new Date();
+    const updated = await client.identificationRun.updateMany({
+      data: {
+        confirmationStatus: input.decision === "reject" ? "rejected" : "accepted",
+        confirmedAt,
+        saved: false
+      },
+      where: {
+        confirmationStatus: { in: ["low_confidence", "pending_confirmation"] },
+        id: run.id
+      }
+    });
+
+    if (updated.count !== 1) {
+      throw new IdentificationDecisionConflictError();
+    }
+
+    if (input.decision === "reject") {
+      return {
+        activeClient: null,
+        domain: run.domain,
+        saved: false
+      };
+    }
+
+    const aiResult = parseAiIdentificationResult(run.candidateJson);
+    const domSignature = parseDomSignature(run.domSignatureJson);
+    const { caseSummary, customerSummary } = await this.upsertConfirmedGraph(
+      {
+        aiResult,
+        domain: run.domain,
+        domSignature,
+        userId: input.userId
+      },
+      client
+    );
+
+    await client.identificationRun.update({
+      data: {
+        customerCaseId: caseSummary?.id ?? null,
+        customerId: customerSummary?.id ?? null,
+        saved: Boolean(customerSummary)
+      },
+      where: { id: run.id }
+    });
+
+    return {
+      activeClient: customerSummary,
+      domain: run.domain,
+      saved: Boolean(customerSummary)
+    };
+  }
+
+  private async upsertConfirmedGraph(
+    input: ConfirmedGraphInput,
+    client: CustomerPersistenceClient
+  ): Promise<{
+    caseSummary: CustomerCaseSummary | null;
+    customerSummary: CustomerSummary | null;
+  }> {
+    const activeClient = input.aiResult.activeClient;
+
+    if (!activeClient) {
+      return { caseSummary: null, customerSummary: null };
+    }
+
+    const identity = resolveIdentity(input.aiResult, input.domSignature.anchorText ?? "");
+    const existingCustomerId = input.existingCustomerId;
+
+    if (identity.kind === "unknown" && !existingCustomerId) {
+      return { caseSummary: null, customerSummary: null };
+    }
+
+    const identityValue = identity.kind === "unknown"
+      ? existingCustomerId!
+      : identity.value;
+    const now = new Date();
+    const customer = existingCustomerId
+      ? await (async () => {
+          const existing = await client.customer.findFirst({
+            where: {
+              domain: input.domain,
+              id: existingCustomerId,
+              userId: input.userId
+            }
+          });
+
+          if (!existing) {
+            return null;
+          }
+
+          return client.customer.update({
+            data: {
+              confidence: input.aiResult.confidence,
+              displayName: activeClient.name ?? existing.displayName,
+              lastSeenAt: now,
+              maskedIdentifiers: toJsonValue(
+                mergeAiMaskedIdentifiers(existing.maskedIdentifiers, input.aiResult)
+              )
+            },
+            where: { id: existing.id }
+          });
+        })()
+      : await (async () => {
+          if (identity.kind === "unknown") {
+            return null;
+          }
+
+          const identityHash = hashWithSecret(
+            this.config.IDENTITY_HASH_SECRET,
+            `${identity.kind}:${identity.value}`
+          );
+          const existing = await client.customer.findUnique({
+            where: {
+              userId_domain_identityHash: {
+                domain: input.domain,
+                identityHash,
+                userId: input.userId
+              }
+            }
+          });
+
+          if (existing) {
+            return client.customer.update({
+              data: {
+                confidence: input.aiResult.confidence,
+                displayName: activeClient.name ?? existing.displayName,
+                lastSeenAt: now,
+                maskedIdentifiers: toJsonValue(
+                  mergeAiMaskedIdentifiers(existing.maskedIdentifiers, input.aiResult)
+                )
+              },
+              where: { id: existing.id }
+            });
+          }
+
+          return client.customer.create({
+            data: {
+              confidence: input.aiResult.confidence,
+              displayName: activeClient.name ?? null,
+              domain: input.domain,
+              identityHash,
+              identityKind: identity.kind,
+              lastSeenAt: now,
+              maskedIdentifiers: toJsonValue(buildMaskedIdentifiers(input.aiResult)),
+              userId: input.userId
+            }
+          });
+        })();
+
+    if (!customer) {
+      return {
+        caseSummary: null,
+        customerSummary: null
+      };
+    }
+
+    const customerSummary = toCustomerSummary({ ...customer, cases: [] });
+    const caseSummary = await this.upsertCase(input, customer.id, identityValue, client);
+    await this.upsertDomPattern(input, customer.id, client);
 
     if (caseSummary) {
       customerSummary.cases = [caseSummary];
@@ -449,7 +744,8 @@ export class CustomerRepository {
   private async upsertCase(
     input: ConfirmedGraphInput,
     customerId: string,
-    identityValue: string
+    identityValue: string,
+    client: CustomerPersistenceClient
   ): Promise<CustomerCaseSummary | null> {
     const protocol = canonicalizeProtocol(input.aiResult.case?.protocol ?? undefined);
     const subject = input.aiResult.case?.subject?.trim();
@@ -459,9 +755,10 @@ export class CustomerRepository {
       return null;
     }
 
-    const customerCase = await this.prisma.customerCase.upsert({
+    const caseHash = hashWithSecret(this.config.IDENTITY_HASH_SECRET, caseKey);
+    const customerCase = await client.customerCase.upsert({
       create: {
-        caseHash: hashWithSecret(this.config.IDENTITY_HASH_SECRET, caseKey),
+        caseHash,
         caseKind: protocol ? "protocol" : "subject_context",
         confidence: input.aiResult.confidence,
         customerId,
@@ -482,17 +779,21 @@ export class CustomerRepository {
       },
       where: {
         userId_domain_caseHash: {
-          caseHash: hashWithSecret(this.config.IDENTITY_HASH_SECRET, caseKey),
+          caseHash,
           domain: input.domain,
           userId: input.userId
         }
       }
     });
 
-    return this.toCaseSummary(customerCase);
+    return toCaseSummary(customerCase);
   }
 
-  private async upsertDomPattern(input: ConfirmedGraphInput, customerId: string): Promise<void> {
+  private async upsertDomPattern(
+    input: ConfirmedGraphInput,
+    customerId: string,
+    client: CustomerPersistenceClient
+  ): Promise<void> {
     const patternHash = hashWithSecret(
       this.config.IDENTITY_HASH_SECRET,
       JSON.stringify({
@@ -505,7 +806,7 @@ export class CustomerRepository {
       })
     );
 
-    await this.prisma.customerDomPattern.upsert({
+    await client.customerDomPattern.upsert({
       create: {
         anchorText: input.domSignature.anchorText ?? null,
         customerId,
@@ -514,7 +815,7 @@ export class CustomerRepository {
         lastSeenAt: new Date(),
         nameText: input.domSignature.nameText ?? null,
         patternHash,
-        signatureJson: input.domSignature as any,
+        signatureJson: toJsonValue(input.domSignature),
         userId: input.userId
       },
       update: {
@@ -523,7 +824,7 @@ export class CustomerRepository {
         identifierText: input.domSignature.identifierText ?? null,
         lastSeenAt: new Date(),
         nameText: input.domSignature.nameText ?? null,
-        signatureJson: input.domSignature as any
+        signatureJson: toJsonValue(input.domSignature)
       },
       where: {
         userId_domain_patternHash: {
@@ -535,46 +836,49 @@ export class CustomerRepository {
     });
   }
 
-  private async writeRun(input: RunWriteInput): Promise<void> {
+  private async writeRun(
+    input: RunWriteInput,
+    client: CustomerPersistenceClient = this.prisma
+  ): Promise<void> {
     const selectedLabel = input.domSignature.anchorText?.slice(0, 160) ?? null;
 
-    await this.prisma.identificationRun.upsert({
+    await client.identificationRun.upsert({
       create: {
         bulkBatchId: input.bulkBatchId ?? null,
         bulkItemIndex: input.bulkItemIndex ?? null,
-        candidateJson: input.aiResult as any,
+        candidateJson: toJsonValue(input.aiResult),
         confidence: input.aiResult.confidence,
         confirmationStatus: input.confirmationStatus,
         confirmedAt: input.confirmedAt ?? null,
         customerCaseId: input.customerCaseId ?? null,
         customerId: input.customerId ?? null,
-        domSignatureJson: input.domSignature as any,
+        domSignatureJson: toJsonValue(input.domSignature),
         domain: input.domain,
         durationMs: input.durationMs,
-        evidenceJson: input.aiResult.evidence.map(redactSensitiveText),
+        evidenceJson: toJsonValue(input.aiResult.evidence.map(redactSensitiveText)),
         pageUrlHash: hashWithSecret(this.config.IDENTITY_HASH_SECRET, input.request.url),
         requestId: input.request.requestId,
         saved: input.saved,
         selectedLabel,
         userId: input.userId,
-        warningsJson: input.aiResult.warnings.map(redactSensitiveText)
+        warningsJson: toJsonValue(input.aiResult.warnings.map(redactSensitiveText))
       },
       update: {
         bulkBatchId: input.bulkBatchId ?? null,
         bulkItemIndex: input.bulkItemIndex ?? null,
-        candidateJson: input.aiResult as any,
+        candidateJson: toJsonValue(input.aiResult),
         confidence: input.aiResult.confidence,
         confirmationStatus: input.confirmationStatus,
         confirmedAt: input.confirmedAt ?? null,
         customerCaseId: input.customerCaseId ?? null,
         customerId: input.customerId ?? null,
-        domSignatureJson: input.domSignature as any,
+        domSignatureJson: toJsonValue(input.domSignature),
         durationMs: input.durationMs,
-        evidenceJson: input.aiResult.evidence.map(redactSensitiveText),
+        evidenceJson: toJsonValue(input.aiResult.evidence.map(redactSensitiveText)),
         saved: input.saved,
         selectedLabel,
-        warningsJson: input.aiResult.warnings.map(redactSensitiveText)
-      } as any,
+        warningsJson: toJsonValue(input.aiResult.warnings.map(redactSensitiveText))
+      },
       where: {
         userId_requestId: {
           requestId: input.request.requestId,
@@ -582,139 +886,5 @@ export class CustomerRepository {
         }
       }
     });
-  }
-
-  private buildDomSignature(
-    request: ClientIdentificationRequest,
-    aiResult: AiClientIdentificationResult
-  ): DomSignature {
-    const maskedIdentifiers = this.buildMaskedIdentifiers(aiResult);
-    const anchorText = compact(request.manualSelection.label ?? request.selectedText, 240);
-    const nameText = compact(aiResult.activeClient?.name ?? request.manualSelection.label, 160);
-    const identifierText = compact(
-      firstValue([
-        maskedIdentifiers.protocol,
-        maskedIdentifiers.phone,
-        maskedIdentifiers.email,
-        maskedIdentifiers.document
-      ]),
-      160
-    );
-    const candidateLabels = (request.domSummary?.candidateLabels ?? [])
-      .map((value) => compact(value, 160))
-      .filter((value): value is string => Boolean(value))
-      .slice(0, 12);
-    const nearbyHeadings = (request.domSummary?.nearbyHeadings ?? [])
-      .map((value) => compact(value, 160))
-      .filter((value): value is string => Boolean(value))
-      .slice(0, 12);
-
-    return {
-      ...(anchorText ? { anchorText } : {}),
-      ...(request.domSummary?.ariaLabel ? { ariaLabel: request.domSummary.ariaLabel } : {}),
-      candidateLabels,
-      ...(identifierText ? { identifierText } : {}),
-      ...(nameText ? { nameText } : {}),
-      nearbyHeadings,
-      ...(request.domSummary?.selectedRole ? { selectedRole: request.domSummary.selectedRole } : {}),
-      selectedTag: request.domSummary?.selectedTag ?? "unknown",
-      tokens: extractTokens([
-        anchorText,
-        nameText,
-        identifierText,
-        ...candidateLabels,
-        ...nearbyHeadings
-      ])
-    };
-  }
-
-  private parseDomSignature(value: unknown): DomSignature {
-    const raw = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
-
-    return {
-      ...(typeof raw.anchorText === "string" ? { anchorText: raw.anchorText } : {}),
-      ...(typeof raw.ariaLabel === "string" ? { ariaLabel: raw.ariaLabel } : {}),
-      candidateLabels: Array.isArray(raw.candidateLabels)
-        ? raw.candidateLabels.filter((item): item is string => typeof item === "string")
-        : [],
-      ...(typeof raw.identifierText === "string" ? { identifierText: raw.identifierText } : {}),
-      ...(typeof raw.nameText === "string" ? { nameText: raw.nameText } : {}),
-      nearbyHeadings: Array.isArray(raw.nearbyHeadings)
-        ? raw.nearbyHeadings.filter((item): item is string => typeof item === "string")
-        : [],
-      ...(typeof raw.selectedRole === "string" ? { selectedRole: raw.selectedRole } : {}),
-      selectedTag: typeof raw.selectedTag === "string" ? raw.selectedTag : "unknown",
-      tokens: Array.isArray(raw.tokens)
-        ? raw.tokens.filter((item): item is string => typeof item === "string")
-        : []
-    };
-  }
-
-  private resolveIdentity(aiResult: AiClientIdentificationResult, context: string) {
-    return chooseCanonicalIdentity({
-      context: redactSensitiveText(context),
-      ...(aiResult.activeClient?.identifiers.document
-        ? { document: aiResult.activeClient.identifiers.document }
-        : {}),
-      ...(aiResult.activeClient?.identifiers.email
-        ? { email: aiResult.activeClient.identifiers.email }
-        : {}),
-      ...(aiResult.activeClient?.name ? { name: aiResult.activeClient.name } : {}),
-      ...(aiResult.activeClient?.identifiers.phone
-        ? { phone: aiResult.activeClient.identifiers.phone }
-        : {}),
-      ...(aiResult.case?.protocol ? { protocol: aiResult.case.protocol } : {})
-    });
-  }
-
-  private buildMaskedIdentifiers(aiResult: AiClientIdentificationResult): MaskedIdentifiers {
-    const document = maskDocument(aiResult.activeClient?.identifiers.document);
-    const email = maskEmail(aiResult.activeClient?.identifiers.email);
-    const phone = maskPhone(aiResult.activeClient?.identifiers.phone);
-
-    return {
-      ...(document ? { document } : {}),
-      ...(email ? { email } : {}),
-      ...(phone ? { phone } : {}),
-      ...(aiResult.case?.protocol ? { protocol: aiResult.case.protocol } : {})
-    };
-  }
-
-  private toCustomerSummary(customer: {
-    cases: Array<{
-      id: string;
-      lastSeenAt: Date;
-      protocolDisplay: string | null;
-      statusDisplay: string | null;
-      subjectDisplay: string | null;
-    }>;
-    displayName: string | null;
-    id: string;
-    lastSeenAt: Date;
-    maskedIdentifiers: unknown;
-  }): CustomerSummary {
-    return {
-      cases: customer.cases.map((customerCase) => this.toCaseSummary(customerCase)),
-      ...(customer.displayName ? { displayName: customer.displayName } : {}),
-      id: customer.id,
-      lastSeenAt: toIso(customer.lastSeenAt),
-      maskedIdentifiers: customer.maskedIdentifiers as MaskedIdentifiers
-    };
-  }
-
-  private toCaseSummary(customerCase: {
-    id: string;
-    lastSeenAt: Date;
-    protocolDisplay: string | null;
-    statusDisplay: string | null;
-    subjectDisplay: string | null;
-  }): CustomerCaseSummary {
-    return {
-      id: customerCase.id,
-      lastSeenAt: toIso(customerCase.lastSeenAt),
-      ...(customerCase.protocolDisplay ? { protocol: customerCase.protocolDisplay } : {}),
-      ...(customerCase.statusDisplay ? { status: customerCase.statusDisplay } : {}),
-      ...(customerCase.subjectDisplay ? { subject: customerCase.subjectDisplay } : {})
-    };
   }
 }

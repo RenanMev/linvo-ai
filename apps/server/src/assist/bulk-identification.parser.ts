@@ -43,7 +43,9 @@ function onlyDigits(value: string): string {
 }
 
 function getPhoneMatches(text: string): PhoneMatch[] {
-  const matches = text.match(/(?:\+?55[\s().-]*)?(?:\(?\d{2}\)?[\s().-]*)?9?\d{4}[\s.-]?\d{4}\b/g) ?? [];
+  const matches =
+    text.match(/(?:\+?55[\s().-]*)?(?:\(?\d{2}\)?[\s().-]*)?9?\d{4}[\s.-]?\d{4}\b/g) ??
+    [];
   const unique = new Map<string, PhoneMatch>();
 
   for (const raw of matches) {
@@ -68,8 +70,10 @@ function getPhoneMatches(text: string): PhoneMatch[] {
 }
 
 function getProtocolMatch(text: string, phoneMatches: PhoneMatch[]): ProtocolMatch | null {
-  const matches = text.matchAll(/(?:^|\s)[-–—]\s*([\p{L}\p{N}][\p{L}\p{N}._-]{2,})/gu);
-  const phoneDigits = new Set(phoneMatches.flatMap((phone) => [onlyDigits(phone.raw), phone.canonical]));
+  const matches = text.matchAll(/(?:^|\s)[-\u2013\u2014]\s*([\p{L}\p{N}][\p{L}\p{N}._-]{2,})/gu);
+  const phoneDigits = new Set(
+    phoneMatches.flatMap((phone) => [onlyDigits(phone.raw), phone.canonical])
+  );
 
   for (const match of matches) {
     const raw = match[1] ?? "";
@@ -98,7 +102,7 @@ function removeKnownParts(text: string, phoneMatches: PhoneMatch[], protocol: Pr
   let cleaned = text;
 
   if (protocol) {
-    const protocolPattern = new RegExp(`\\s*[-–—]\\s*${escapeRegex(protocol.raw)}\\S*`, "iu");
+    const protocolPattern = new RegExp(`\\s*[-\\u2013\\u2014]\\s*${escapeRegex(protocol.raw)}\\S*`, "iu");
     cleaned = cleaned.replace(protocolPattern, " ");
   }
 
@@ -113,8 +117,8 @@ function removeKnownParts(text: string, phoneMatches: PhoneMatch[], protocol: Pr
   return compact(
     cleaned
       .replace(/\b\d{1,2}\b/gu, " ")
-      .replace(/[•·|]+/gu, " ")
-      .replace(/\s*[-–—]\s*$/u, " ")
+      .replace(/[\u2022\u00b7|]+/gu, " ")
+      .replace(/\s*[-\u2013\u2014]\s*$/u, " ")
       .replace(/\.{2,}/gu, " ")
   );
 }
@@ -122,7 +126,7 @@ function removeKnownParts(text: string, phoneMatches: PhoneMatch[], protocol: Pr
 function getName(text: string, phoneMatches: PhoneMatch[], protocol: ProtocolMatch | null): string | null {
   const protocolIndex = protocol ? text.indexOf(protocol.raw) : -1;
   const prefix = protocolIndex > 0
-    ? text.slice(0, protocolIndex).replace(/\s*[-–—]\s*$/u, "")
+    ? text.slice(0, protocolIndex).replace(/\s*[-\u2013\u2014]\s*$/u, "")
     : text;
   const cleaned = removeKnownParts(prefix, phoneMatches, protocol);
 

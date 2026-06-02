@@ -1,22 +1,29 @@
 import type {
   AiClientIdentificationResult,
   BulkClientIdentificationRequest,
+  ClientInfoOpenRequest,
   ClientIdentificationRequest,
   CustomerSummary,
   PendingClientSummary
 } from "@linvo-ai/shared";
 
 import { ClientIdentificationService } from "../src/assist/client-identification.service";
+import { IdentificationDecisionConflictError } from "../src/assist/customer.repository";
 import type { AppConfig } from "../src/config/env.schema";
+import { ApiHttpException } from "../src/http-error";
 
 const config: AppConfig = {
   AI_BASE_URL: "https://example.test",
   AI_MODEL: "test-model",
+  CORS_ALLOWED_ORIGINS: ["http://localhost:*"],
   DATABASE_URL: "postgresql://example",
   IDENTIFICATION_CONFIDENCE_MIN: 0.72,
   IDENTITY_HASH_SECRET: "identity-secret-for-tests",
   JWT_ACCESS_SECRET: "access-secret-for-tests",
+  JWT_AUDIENCE: "linvo-ai-extension",
+  JWT_ISSUER: "linvo-ai-server",
   JWT_REFRESH_SECRET: "refresh-secret-for-tests",
+  NODE_ENV: "test",
   PASSWORD_PEPPER: "password-pepper-for-tests",
   PORT: 8791
 };
@@ -116,9 +123,26 @@ const bulkRequest: BulkClientIdentificationRequest = {
   url: "https://painel.nvoip.com.br/service/queue"
 };
 
+const clientInfoOpenRequest: ClientInfoOpenRequest = {
+  capturedAt: new Date().toISOString(),
+  pageText: "Atendimento aberto para Davi no protocolo 140987001",
+  pageTitle: "Painel Nvoip",
+  requestId: "info-1",
+  url: "https://painel.nvoip.com.br/service/140987001"
+};
+
 function createService(overrides: Record<string, unknown> = {}) {
   const aiClient = {
-    identifyClient: vi.fn().mockResolvedValue(aiResult)
+    analyzeClientIdentification: vi.fn().mockResolvedValue(aiResult),
+    enrichClientIdentification: vi.fn().mockResolvedValue(aiResult),
+    identifyClient: vi.fn().mockResolvedValue(aiResult),
+    selectClientInfo: vi.fn().mockResolvedValue(null),
+    validateClientDuplicate: vi.fn().mockResolvedValue({
+      confidence: 0.84,
+      evidence: ["Nenhum cliente salvo corresponde com seguranca."],
+      status: "new",
+      warnings: []
+    })
   };
   const repository = {
     canPersistCandidate: vi.fn().mockReturnValue(true),
@@ -144,6 +168,7 @@ function createService(overrides: Record<string, unknown> = {}) {
         ...(result.case?.protocol ? { protocol: result.case.protocol } : {})
       }
     } satisfies PendingClientSummary)),
+    updateCustomer: vi.fn(),
     ...overrides
   };
   const service = new ClientIdentificationService(
@@ -156,14 +181,76 @@ function createService(overrides: Record<string, unknown> = {}) {
 }
 
 describe("ClientIdentificationService", () => {
+  it("opens client info using the AI-selected customer", async () => {
+    const { aiClient, service } = createService({
+      listRecentCustomers: vi.fn().mockResolvedValue([customer])
+    });
+    aiClient.selectClientInfo.mockResolvedValue({
+      confidence: 0.92,
+      customerId: customer.id,
+      evidence: ["Nome e protocolo batem com o cliente salvo."],
+      status: "ok"
+    });
+
+    const response = await service.openClientInfo("user-1", clientInfoOpenRequest);
+
+    expect(response.status).toBe("ok");
+    expect(response.status === "ok" ? response.customer.id : null).toBe(customer.id);
+    expect(response.status === "ok" ? response.source : null).toBe("llm");
+    expect(aiClient.selectClientInfo).toHaveBeenCalledWith({
+      customers: [customer],
+      request: clientInfoOpenRequest
+    });
+  });
+
+  it("opens client info with the fallback heuristic when the page matches a saved customer", async () => {
+    const { service } = createService({
+      listRecentCustomers: vi.fn().mockResolvedValue([customer])
+    });
+
+    const response = await service.openClientInfo("user-1", clientInfoOpenRequest);
+
+    expect(response.status).toBe("ok");
+    expect(response.status === "ok" ? response.customer.id : null).toBe(customer.id);
+    expect(response.status === "ok" ? response.source : null).toBe("heuristic");
+  });
+
+  it("returns no_match when no saved customer is reliable enough", async () => {
+    const { service } = createService({
+      listRecentCustomers: vi.fn().mockResolvedValue([customer])
+    });
+
+    const response = await service.openClientInfo("user-1", {
+      ...clientInfoOpenRequest,
+      pageText: "Fila geral de atendimentos sem dados do cliente"
+    });
+
+    expect(response.status).toBe("no_match");
+  });
+
   it("returns pending confirmation without saving a new reliable customer", async () => {
-    const { repository, service } = createService();
+    const { aiClient, repository, service } = createService();
 
     const response = await service.identify("user-1", request);
 
     expect(response.saveState).toBe("pending_confirmation");
     expect(response.saved).toBe(false);
     expect(response.pendingClient?.displayName).toBe("Davi");
+    expect(aiClient.analyzeClientIdentification).toHaveBeenCalledWith(request);
+    expect(aiClient.validateClientDuplicate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        analysisResult: aiResult,
+        candidates: [],
+        request
+      })
+    );
+    expect(aiClient.enrichClientIdentification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        analysisResult: aiResult,
+        matchedCustomer: null,
+        request
+      })
+    );
     expect(repository.savePendingIdentification).toHaveBeenCalledWith(
       expect.objectContaining({
         confirmationStatus: "pending_confirmation",
@@ -171,6 +258,41 @@ describe("ClientIdentificationService", () => {
       })
     );
     expect(repository.saveConfirmedIdentification).not.toHaveBeenCalled();
+  });
+
+  it("uses AI duplicate validation to update a matched existing customer", async () => {
+    const { aiClient, repository, service } = createService({
+      listRecentCustomers: vi.fn().mockResolvedValue([customer]),
+      saveConfirmedIdentification: vi.fn().mockResolvedValue({
+        caseSummary: customer.cases[0],
+        customerSummary: customer
+      })
+    });
+    aiClient.validateClientDuplicate.mockResolvedValue({
+      confidence: 0.93,
+      customerId: customer.id,
+      evidence: ["Mesmo protocolo e nome do cliente salvo."],
+      status: "match",
+      warnings: []
+    });
+
+    const response = await service.identify("user-1", request);
+
+    expect(response.saveState).toBe("known");
+    expect(response.saved).toBe(true);
+    expect(response.activeClient?.id).toBe(customer.id);
+    expect(aiClient.enrichClientIdentification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        matchedCustomer: customer
+      })
+    );
+    expect(repository.saveConfirmedIdentification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        confirmationStatus: "known",
+        existingCustomerId: customer.id
+      })
+    );
+    expect(repository.savePendingIdentification).not.toHaveBeenCalled();
   });
 
   it("marks known customers as saved without asking again", async () => {
@@ -209,6 +331,46 @@ describe("ClientIdentificationService", () => {
     expect(response.saved).toBe(true);
     expect(response.activeClient?.displayName).toBe("Davi");
     expect(response.recentCustomers).toHaveLength(1);
+  });
+
+  it("rejects a pending candidate and returns no active client", async () => {
+    const { repository, service } = createService({
+      decidePendingIdentification: vi.fn().mockResolvedValue({
+        activeClient: null,
+        domain: "painel.nvoip.com.br",
+        saved: false
+      })
+    });
+
+    const response = await service.decide("user-1", {
+      decision: "reject",
+      requestId: "req-1"
+    });
+
+    expect(response.saved).toBe(false);
+    expect(response.activeClient).toBeNull();
+    expect(repository.decidePendingIdentification).toHaveBeenCalledWith({
+      decision: "reject",
+      requestId: "req-1",
+      userId: "user-1"
+    });
+  });
+
+  it("maps repeated decisions to a conflict response", async () => {
+    const { service } = createService({
+      decidePendingIdentification: vi.fn().mockRejectedValue(new IdentificationDecisionConflictError())
+    });
+
+    try {
+      await service.decide("user-1", {
+        decision: "accept",
+        requestId: "req-1"
+      });
+      throw new Error("Expected decide to throw.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiHttpException);
+      expect((error as ApiHttpException).getStatus()).toBe(409);
+    }
   });
 
   it("returns bulk candidates as pending without creating customers", async () => {
@@ -273,6 +435,68 @@ describe("ClientIdentificationService", () => {
     expect(response.acceptedCount).toBe(2);
     expect(response.rejectedCount).toBe(1);
     expect(response.savedCustomers).toHaveLength(1);
+  });
+
+  it("updates all editable customer fields", async () => {
+    const updatedCustomer: CustomerSummary = {
+      ...customer,
+      cases: [
+        {
+          ...customer.cases[0]!,
+          protocol: "140987002",
+          status: "Em andamento",
+          subject: "Suporte tecnico"
+        }
+      ],
+      displayName: "Davi Atualizado",
+      maskedIdentifiers: {
+        document: "***.***.***-11",
+        email: "da***@example.com",
+        phone: "(55) *****-1234",
+        protocol: "140987002"
+      },
+      notes: "Cliente prefere WhatsApp."
+    };
+    const { repository, service } = createService({
+      listRecentCustomers: vi.fn().mockResolvedValue([updatedCustomer]),
+      updateCustomer: vi.fn().mockResolvedValue({
+        customer: updatedCustomer,
+        domain: "painel.nvoip.com.br"
+      })
+    });
+
+    const response = await service.updateCustomer("user-1", {
+      case: {
+        caseId: customer.cases[0]!.id,
+        protocol: "140987002",
+        status: "Em andamento",
+        subject: "Suporte tecnico"
+      },
+      customerId: customer.id,
+      displayName: "Davi Atualizado",
+      maskedIdentifiers: {
+        document: "***.***.***-11",
+        email: "da***@example.com",
+        phone: "(55) *****-1234",
+        protocol: "140987002"
+      },
+      notes: "Cliente prefere WhatsApp."
+    });
+
+    expect(response.customer.displayName).toBe("Davi Atualizado");
+    expect(response.customer.maskedIdentifiers.phone).toBe("(55) *****-1234");
+    expect(response.customer.cases[0]?.subject).toBe("Suporte tecnico");
+    expect(repository.updateCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        case: expect.objectContaining({ protocol: "140987002" }),
+        customerId: customer.id,
+        maskedIdentifiers: expect.objectContaining({
+          email: "da***@example.com"
+        }),
+        notes: "Cliente prefere WhatsApp.",
+        userId: "user-1"
+      })
+    );
   });
 
   it("returns low confidence for bulk rows without enough identity", async () => {

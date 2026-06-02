@@ -3,7 +3,10 @@ import { Body, Controller, Get, Inject, Query, Req, UseGuards, Post } from "@nes
 import {
   bulkClientIdentificationDecisionRequestSchema,
   bulkClientIdentificationRequestSchema,
+  clientInfoOpenRequestSchema,
   clientIdentificationDecisionRequestSchema,
+  customerDeleteRequestSchema,
+  customerUpdateRequestSchema,
   clientIdentificationRequestSchema
 } from "@linvo-ai/shared";
 
@@ -29,6 +32,17 @@ export class ClientIdentificationController {
     }
 
     return this.service.identify(request.user.id, parsed.data);
+  }
+
+  @Post("client-info/open")
+  openClientInfo(@Body() body: unknown, @Req() request: { user: AuthenticatedUser }) {
+    const parsed = clientInfoOpenRequestSchema.safeParse(body);
+
+    if (!parsed.success) {
+      throw new ApiHttpException(400, "INVALID_REQUEST", "Dados invalidos para abrir informacoes do cliente.");
+    }
+
+    return this.service.openClientInfo(request.user.id, parsed.data);
   }
 
   @Post("client-identification/decision")
@@ -69,10 +83,31 @@ export class ClientIdentificationController {
     @Query("domain") domain: string | undefined,
     @Req() request: { user: AuthenticatedUser }
   ) {
-    if (!domain?.trim()) {
-      throw new ApiHttpException(400, "INVALID_REQUEST", "Dominio obrigatorio.");
+    return this.service.listCustomers(
+      request.user.id,
+      domain?.trim() ? domain.trim().toLowerCase() : undefined
+    );
+  }
+
+  @Post("customers/update")
+  updateCustomer(@Body() body: unknown, @Req() request: { user: AuthenticatedUser }) {
+    const parsed = customerUpdateRequestSchema.safeParse(body);
+
+    if (!parsed.success) {
+      throw new ApiHttpException(400, "INVALID_REQUEST", "Dados invalidos para atualizar o cliente.");
     }
 
-    return this.service.listCustomers(request.user.id, domain.trim().toLowerCase());
+    return this.service.updateCustomer(request.user.id, parsed.data);
+  }
+
+  @Post("customers/delete")
+  deleteCustomer(@Body() body: unknown, @Req() request: { user: AuthenticatedUser }) {
+    const parsed = customerDeleteRequestSchema.safeParse(body);
+
+    if (!parsed.success) {
+      throw new ApiHttpException(400, "INVALID_REQUEST", "Cliente invalido para apagar.");
+    }
+
+    return this.service.deleteCustomer(request.user.id, parsed.data.customerId);
   }
 }

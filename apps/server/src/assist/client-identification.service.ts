@@ -1,27 +1,98 @@
 import { Inject, Injectable } from "@nestjs/common";
 
 import {
+  CLIENT_INFO_OPEN_MIN_CONFIDENCE,
   bulkClientIdentificationDecisionResponseSchema,
   bulkClientIdentificationResponseSchema,
+  clientInfoOpenNoMatchResponseSchema,
+  clientInfoOpenSuccessResponseSchema,
   clientIdentificationDecisionResponseSchema,
   clientIdentificationSuccessResponseSchema,
+  customerUpdateResponseSchema,
   type BulkClientIdentificationCandidate,
   type BulkClientIdentificationDecisionRequest,
   type BulkClientIdentificationDecisionResponse,
   type BulkClientIdentificationRequest,
   type BulkClientIdentificationResponse,
+  type ClientInfoOpenApiResponse,
+  type ClientInfoOpenRequest,
   type ClientIdentificationDecisionRequest,
   type ClientIdentificationDecisionResponse,
   type ClientIdentificationRequest,
-  type ClientIdentificationSuccessResponse
+  type ClientIdentificationSuccessResponse,
+  type CustomerSummary,
+  type CustomerUpdateRequest,
+  type CustomerUpdateResponse
 } from "@linvo-ai/shared";
 
-import { AiClientService } from "../ai/ai-client.service";
+import { AiClientService, type AiDuplicateValidationResult } from "../ai/ai-client.service";
 import type { AppConfig } from "../config/env.schema";
 import { APP_CONFIG } from "../config/env.schema";
 import { ApiHttpException } from "../http-error";
 import { parseBulkIdentificationItems } from "./bulk-identification.parser";
-import { CustomerRepository } from "./customer.repository";
+import {
+  CustomerRepository,
+  IdentificationDecisionConflictError
+} from "./customer.repository";
+
+function compact(value: string | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeText(value: string | undefined): string {
+  return compact(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function onlyDigits(value: string | undefined): string {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+function scoreInfoCustomer(request: ClientInfoOpenRequest, customer: CustomerSummary): {
+  evidence: string[];
+  score: number;
+} {
+  const haystack = normalizeText(request.pageText);
+  const digits = onlyDigits(request.pageText);
+  const evidence: string[] = [];
+  let score = 0;
+
+  const addTextMatch = (value: string | undefined, points: number, label: string) => {
+    const normalized = normalizeText(value);
+
+    if (normalized.length >= 3 && haystack.includes(normalized)) {
+      score += points;
+      evidence.push(label);
+    }
+  };
+  const addDigitTailMatch = (value: string | undefined, points: number, label: string) => {
+    const tail = onlyDigits(value).slice(-4);
+
+    if (tail.length >= 4 && digits.includes(tail)) {
+      score += points;
+      evidence.push(label);
+    }
+  };
+
+  addTextMatch(customer.displayName, 0.42, "Nome do cliente aparece na pagina.");
+  addTextMatch(customer.maskedIdentifiers.protocol, 0.38, "Protocolo salvo aparece na pagina.");
+  addTextMatch(customer.maskedIdentifiers.email, 0.24, "Email salvo aparece na pagina.");
+  addTextMatch(customer.maskedIdentifiers.document, 0.24, "Documento salvo aparece na pagina.");
+  addDigitTailMatch(customer.maskedIdentifiers.phone, 0.38, "Telefone salvo aparece na pagina.");
+  addDigitTailMatch(customer.maskedIdentifiers.document, 0.26, "Documento salvo aparece na pagina.");
+
+  for (const customerCase of customer.cases.slice(0, 3)) {
+    addTextMatch(customerCase.protocol, 0.34, "Protocolo de caso salvo aparece na pagina.");
+    addTextMatch(customerCase.subject, 0.12, "Assunto de caso salvo aparece na pagina.");
+  }
+
+  return {
+    evidence: evidence.slice(0, 4),
+    score: Math.min(1, score)
+  };
+}
 
 @Injectable()
 export class ClientIdentificationService {
@@ -33,13 +104,123 @@ export class ClientIdentificationService {
     private readonly customerRepository: CustomerRepository
   ) {}
 
+  async openClientInfo(
+    userId: string,
+    request: ClientInfoOpenRequest
+  ): Promise<ClientInfoOpenApiResponse> {
+    const domain = new URL(request.url).hostname.toLowerCase();
+    const customers = await this.customerRepository.listRecentCustomers(userId, domain);
+
+    if (customers.length === 0) {
+      return clientInfoOpenNoMatchResponseSchema.parse({
+        customers,
+        domain,
+        reason: "Nenhum cliente identificado foi encontrado para esta pagina.",
+        requestId: request.requestId,
+        status: "no_match"
+      });
+    }
+
+    const aiSelection = await this.aiClient.selectClientInfo({
+      customers,
+      request
+    });
+
+    if (aiSelection?.status === "no_match") {
+      return clientInfoOpenNoMatchResponseSchema.parse({
+        customers,
+        domain,
+        reason: aiSelection.reason,
+        requestId: request.requestId,
+        status: "no_match"
+      });
+    }
+
+    if (aiSelection?.status === "ok") {
+      const customer = customers.find((item) => item.id === aiSelection.customerId);
+
+      if (customer && aiSelection.confidence >= CLIENT_INFO_OPEN_MIN_CONFIDENCE) {
+        return clientInfoOpenSuccessResponseSchema.parse({
+          confidence: aiSelection.confidence,
+          customer,
+          customers,
+          domain,
+          evidence: aiSelection.evidence,
+          requestId: request.requestId,
+          source: "llm",
+          status: "ok"
+        });
+      }
+    }
+
+    const ranked = customers
+      .map((customer) => ({
+        customer,
+        ...scoreInfoCustomer(request, customer)
+      }))
+      .sort((left, right) => right.score - left.score);
+    const best = ranked[0];
+
+    if (!best || best.score < CLIENT_INFO_OPEN_MIN_CONFIDENCE) {
+      return clientInfoOpenNoMatchResponseSchema.parse({
+        customers,
+        domain,
+        reason: "Nao foi possivel escolher um cliente salvo com confianca suficiente.",
+        requestId: request.requestId,
+        status: "no_match"
+      });
+    }
+
+    return clientInfoOpenSuccessResponseSchema.parse({
+      confidence: best.score,
+      customer: best.customer,
+      customers,
+      domain,
+      evidence: best.evidence.length
+        ? best.evidence
+        : ["Cliente salvo corresponde ao contexto visivel."],
+      requestId: request.requestId,
+      source: "heuristic",
+      status: "ok"
+    });
+  }
+
   async identify(
     userId: string,
     request: ClientIdentificationRequest
   ): Promise<ClientIdentificationSuccessResponse> {
     const startedAt = Date.now();
     const domain = new URL(request.url).hostname;
-    const aiResult = await this.aiClient.identifyClient(request);
+    const analysisResult = await this.aiClient.analyzeClientIdentification(request);
+    const recentCustomers = await this.customerRepository.listRecentCustomers(userId, domain);
+    const duplicateValidation = await this.aiClient.validateClientDuplicate({
+      analysisResult,
+      candidates: recentCustomers,
+      request
+    });
+    const aiMatchedCustomer = this.customerFromDuplicateValidation(
+      duplicateValidation,
+      recentCustomers
+    );
+    const exactExistingCustomer = aiMatchedCustomer
+      ? null
+      : await this.customerRepository.findExistingCustomer(
+          userId,
+          domain,
+          analysisResult,
+          request.selectedText
+        );
+    let matchedCustomer = aiMatchedCustomer ?? exactExistingCustomer;
+    const enrichedDuplicateValidation = this.enrichDuplicateValidation(
+      duplicateValidation,
+      matchedCustomer
+    );
+    const aiResult = await this.aiClient.enrichClientIdentification({
+      analysisResult,
+      duplicateValidation: enrichedDuplicateValidation,
+      matchedCustomer,
+      request
+    });
     const confident = aiResult.confidence >= this.config.IDENTIFICATION_CONFIDENCE_MIN;
     const finalResult = confident
       ? aiResult
@@ -50,9 +231,18 @@ export class ClientIdentificationService {
             "Nao foi possivel confirmar o cliente com confianca suficiente."
           ]
         };
-    const recentCustomers = await this.customerRepository.listRecentCustomers(userId, domain);
+    const persistable = this.customerRepository.canPersistCandidate(finalResult, request.selectedText);
 
-    if (!confident || !this.customerRepository.canPersistCandidate(finalResult, request.selectedText)) {
+    if (confident && persistable && !matchedCustomer) {
+      matchedCustomer = await this.customerRepository.findExistingCustomer(
+        userId,
+        domain,
+        finalResult,
+        request.selectedText
+      );
+    }
+
+    if (!confident || !persistable) {
       await this.customerRepository.savePendingIdentification({
         aiResult: finalResult,
         confirmationStatus: "low_confidence",
@@ -78,27 +268,21 @@ export class ClientIdentificationService {
       });
     }
 
-    const existingCustomer = await this.customerRepository.findExistingCustomer(
-      userId,
-      domain,
-      finalResult,
-      request.selectedText
-    );
-
-    if (existingCustomer) {
+    if (matchedCustomer) {
       const { caseSummary, customerSummary } =
         await this.customerRepository.saveConfirmedIdentification({
           aiResult: finalResult,
           confirmationStatus: "known",
           domain,
           durationMs: Date.now() - startedAt,
+          existingCustomerId: matchedCustomer.id,
           request,
           userId
         });
       const updatedRecentCustomers = await this.customerRepository.listRecentCustomers(userId, domain);
 
       return clientIdentificationSuccessResponseSchema.parse({
-        activeClient: customerSummary ?? existingCustomer,
+        activeClient: customerSummary ?? matchedCustomer,
         case: caseSummary,
         confidence: finalResult.confidence,
         domain,
@@ -142,11 +326,13 @@ export class ClientIdentificationService {
     userId: string,
     request: ClientIdentificationDecisionRequest
   ): Promise<ClientIdentificationDecisionResponse> {
-    const decision = await this.customerRepository.decidePendingIdentification({
-      decision: request.decision,
-      requestId: request.requestId,
-      userId
-    });
+    const decision = await this.withDecisionConflictHandling(() =>
+      this.customerRepository.decidePendingIdentification({
+        decision: request.decision,
+        requestId: request.requestId,
+        userId
+      })
+    );
 
     if (!decision) {
       throw new ApiHttpException(404, "INVALID_REQUEST", "Identificacao pendente nao encontrada.");
@@ -246,6 +432,7 @@ export class ClientIdentificationService {
         candidates.push({
           case: pendingSummary?.case ?? existingCustomer.cases[0] ?? null,
           confidence: finalResult.confidence,
+          customerId: existingCustomer.id,
           ...(existingCustomer.displayName ? { displayName: existingCustomer.displayName } : {}),
           evidence: finalResult.evidence,
           maskedIdentifiers: existingCustomer.maskedIdentifiers,
@@ -300,12 +487,14 @@ export class ClientIdentificationService {
     userId: string,
     request: BulkClientIdentificationDecisionRequest
   ): Promise<BulkClientIdentificationDecisionResponse> {
-    const decision = await this.customerRepository.decideBulkIdentification({
-      acceptRequestIds: request.acceptRequestIds,
-      batchId: request.batchId,
-      rejectRequestIds: request.rejectRequestIds,
-      userId
-    });
+    const decision = await this.withDecisionConflictHandling(() =>
+      this.customerRepository.decideBulkIdentification({
+        acceptRequestIds: request.acceptRequestIds,
+        batchId: request.batchId,
+        rejectRequestIds: request.rejectRequestIds,
+        userId
+      })
+    );
 
     if (!decision) {
       throw new ApiHttpException(404, "INVALID_REQUEST", "Lote de identificacao nao encontrado.");
@@ -326,10 +515,55 @@ export class ClientIdentificationService {
     });
   }
 
-  async listCustomers(userId: string, domain: string) {
+  async listCustomers(userId: string, domain?: string) {
     return {
       customers: await this.customerRepository.listRecentCustomers(userId, domain),
-      domain,
+      ...(domain ? { domain } : {}),
+      status: "ok" as const
+    };
+  }
+
+  async updateCustomer(
+    userId: string,
+    request: CustomerUpdateRequest
+  ): Promise<CustomerUpdateResponse> {
+    const updated = await this.customerRepository.updateCustomer({
+      ...(request.case !== undefined ? { case: request.case } : {}),
+      customerId: request.customerId,
+      ...(request.displayName !== undefined ? { displayName: request.displayName } : {}),
+      ...(request.maskedIdentifiers !== undefined
+        ? { maskedIdentifiers: request.maskedIdentifiers }
+        : {}),
+      ...(request.notes !== undefined ? { notes: request.notes } : {}),
+      userId
+    });
+
+    if (!updated) {
+      throw new ApiHttpException(404, "INVALID_REQUEST", "Cliente nao encontrado.");
+    }
+
+    return customerUpdateResponseSchema.parse({
+      customer: updated.customer,
+      customers: await this.customerRepository.listRecentCustomers(userId),
+      domain: updated.domain,
+      status: "ok"
+    });
+  }
+
+  async deleteCustomer(userId: string, customerId: string) {
+    const deleted = await this.customerRepository.deleteCustomer({
+      customerId,
+      userId
+    });
+
+    if (!deleted) {
+      throw new ApiHttpException(404, "INVALID_REQUEST", "Cliente nao encontrado.");
+    }
+
+    return {
+      customerId,
+      domain: deleted.domain,
+      recentCustomers: await this.customerRepository.listRecentCustomers(userId, deleted.domain),
       status: "ok" as const
     };
   }
@@ -361,5 +595,52 @@ export class ClientIdentificationService {
       surroundingText: request.listSelection.containerText,
       url: request.url
     };
+  }
+
+  private customerFromDuplicateValidation(
+    validation: AiDuplicateValidationResult,
+    candidates: CustomerSummary[]
+  ): CustomerSummary | null {
+    if (
+      validation.status !== "match" ||
+      !validation.customerId ||
+      validation.confidence < this.config.IDENTIFICATION_CONFIDENCE_MIN
+    ) {
+      return null;
+    }
+
+    return candidates.find((customer) => customer.id === validation.customerId) ?? null;
+  }
+
+  private enrichDuplicateValidation(
+    validation: AiDuplicateValidationResult,
+    matchedCustomer: CustomerSummary | null
+  ): AiDuplicateValidationResult {
+    if (!matchedCustomer || validation.status === "match") {
+      return validation;
+    }
+
+    return {
+      ...validation,
+      confidence: Math.max(validation.confidence, this.config.IDENTIFICATION_CONFIDENCE_MIN),
+      customerId: matchedCustomer.id,
+      evidence: [
+        ...validation.evidence,
+        "Cliente existente encontrado por identidade canonica no banco."
+      ],
+      status: "match"
+    };
+  }
+
+  private async withDecisionConflictHandling<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof IdentificationDecisionConflictError) {
+        throw new ApiHttpException(409, "INVALID_REQUEST", "Identificacao ja decidida.");
+      }
+
+      throw error;
+    }
   }
 }
