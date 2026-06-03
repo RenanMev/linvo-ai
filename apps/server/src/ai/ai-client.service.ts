@@ -6,11 +6,15 @@ import {
   CLIENT_INFO_OPEN_SYSTEM_PROMPT,
   CLIENT_IDENTIFICATION_ENRICHMENT_SYSTEM_PROMPT,
   CLIENT_IDENTIFICATION_SYSTEM_PROMPT,
+  SITE_AGENT_CONTEXT_SYSTEM_PROMPT,
   aiClientIdentificationResultSchema,
+  siteAgentContextDraftSchema,
   type AiClientIdentificationResult,
   type ClientInfoOpenRequest,
   type ClientIdentificationRequest,
-  type CustomerSummary
+  type CustomerSummary,
+  type SiteAgentContextDraft,
+  type SiteAgentContextSummary
 } from "@linvo-ai/shared";
 
 import type { AppConfig } from "../config/env.schema";
@@ -23,6 +27,7 @@ import {
   buildClientIdentificationUserPrompt,
   type ClientDuplicateValidationPromptResult
 } from "./client-identification.prompt";
+import { buildSiteContextUserPrompt } from "./site-context.prompt";
 
 interface ChatCompletionResponse {
   choices?: Array<{
@@ -89,6 +94,7 @@ export class AiClientService {
   async selectClientInfo(input: {
     customers: CustomerSummary[];
     request: ClientInfoOpenRequest;
+    siteContext?: SiteAgentContextSummary | null;
   }): Promise<AiClientInfoOpenSelection | null> {
     if (!this.config.AI_API_KEY) {
       return null;
@@ -129,7 +135,8 @@ export class AiClientService {
   }
 
   async analyzeClientIdentification(
-    request: ClientIdentificationRequest
+    request: ClientIdentificationRequest,
+    siteContext?: SiteAgentContextSummary | null
   ): Promise<AiClientIdentificationResult> {
     if (!this.config.AI_API_KEY) {
       throw new ApiHttpException(
@@ -140,7 +147,7 @@ export class AiClientService {
       );
     }
 
-    const userText = buildClientIdentificationUserPrompt(request);
+    const userText = buildClientIdentificationUserPrompt(request, siteContext);
     const userContent: unknown = request.screenshotDataUrl
       ? [
           { text: userText, type: "text" },
@@ -170,6 +177,7 @@ export class AiClientService {
     analysisResult: AiClientIdentificationResult;
     candidates: CustomerSummary[];
     request: ClientIdentificationRequest;
+    siteContext?: SiteAgentContextSummary | null;
   }): Promise<AiDuplicateValidationResult> {
     const parsedContent = await this.requestJsonObject({
       messages: [
@@ -213,6 +221,7 @@ export class AiClientService {
     duplicateValidation: ClientDuplicateValidationPromptResult;
     matchedCustomer: CustomerSummary | null;
     request: ClientIdentificationRequest;
+    siteContext?: SiteAgentContextSummary | null;
   }): Promise<AiClientIdentificationResult> {
     const parsedContent = await this.requestJsonObject({
       messages: [
@@ -226,6 +235,35 @@ export class AiClientService {
 
     if (!parsedResult.success) {
       throw identificationFailed(input.request.requestId, "A IA retornou enriquecimento fora do contrato.");
+    }
+
+    return parsedResult.data;
+  }
+
+  async generateSiteContextDraft(input: {
+    analysisResult: AiClientIdentificationResult;
+    fallbackDraft: SiteAgentContextDraft;
+    request: ClientIdentificationRequest;
+  }): Promise<SiteAgentContextDraft> {
+    const userText = buildSiteContextUserPrompt(input);
+    const userContent: unknown = input.request.screenshotDataUrl
+      ? [
+          { text: userText, type: "text" },
+          { image_url: { url: input.request.screenshotDataUrl }, type: "image_url" }
+        ]
+      : userText;
+    const parsedContent = await this.requestJsonObject({
+      messages: [
+        { content: SITE_AGENT_CONTEXT_SYSTEM_PROMPT, role: "system" },
+        { content: userContent, role: "user" }
+      ],
+      requestId: input.request.requestId,
+      timeoutMs: 12_000
+    });
+    const parsedResult = siteAgentContextDraftSchema.safeParse(parsedContent);
+
+    if (!parsedResult.success) {
+      throw identificationFailed(input.request.requestId, "A IA retornou contexto do site fora do contrato.");
     }
 
     return parsedResult.data;

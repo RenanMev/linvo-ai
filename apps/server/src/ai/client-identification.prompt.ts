@@ -3,6 +3,7 @@ import {
   type AiClientIdentificationResult,
   type ClientIdentificationRequest,
   type CustomerSummary,
+  type SiteAgentContextSummary,
   redactSensitiveText
 } from "@linvo-ai/shared";
 
@@ -18,8 +19,30 @@ function formatList(values: string[] | undefined): string {
   return values?.length ? values.join(", ") : "nenhum";
 }
 
+function compactJson(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function formatSiteContext(siteContext: SiteAgentContextSummary | null | undefined): string {
+  if (!siteContext) {
+    return "Nao ha contexto operacional salvo para este dominio.";
+  }
+
+  return compactJson({
+    focusRules: siteContext.focusRules,
+    ignoreRules: siteContext.ignoreRules,
+    regions: siteContext.regions.map((region) => ({
+      description: region.description,
+      kind: region.kind,
+      ...(region.label ? { label: region.label } : {})
+    })),
+    summary: siteContext.summary
+  });
+}
+
 export function buildClientIdentificationUserPrompt(
-  request: ClientIdentificationRequest
+  request: ClientIdentificationRequest,
+  siteContext?: SiteAgentContextSummary | null
 ): string {
   const domSummary = request.domSummary;
   const selected = redactSensitiveText(request.selectedText);
@@ -58,13 +81,12 @@ export function buildClientIdentificationUserPrompt(
     "",
     `Screenshot: ${request.screenshotDataUrl ? "incluida como imagem da mensagem" : "nao enviada"}`,
     "",
+    "Contexto operacional salvo do site:",
+    formatSiteContext(siteContext),
+    "",
     "Responda exatamente neste formato JSON, preenchendo somente fatos verificaveis:",
     JSON.stringify(CLIENT_IDENTIFICATION_JSON_SHAPE)
   ].join("\n");
-}
-
-function compactJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
 }
 
 function summarizeCustomer(customer: CustomerSummary) {
@@ -85,6 +107,7 @@ export function buildClientDuplicateValidationUserPrompt(input: {
   analysisResult: AiClientIdentificationResult;
   candidates: CustomerSummary[];
   request: ClientIdentificationRequest;
+  siteContext?: SiteAgentContextSummary | null;
 }): string {
   return [
     "Voce valida duplicidade para o Linvo AI.",
@@ -96,6 +119,9 @@ export function buildClientDuplicateValidationUserPrompt(input: {
     `URL: ${input.request.url}`,
     `Titulo: ${input.request.pageTitle}`,
     `Selecao: ${redactSensitiveText(input.request.selectedText)}`,
+    "",
+    "Contexto operacional salvo do site:",
+    formatSiteContext(input.siteContext),
     "",
     "Analise da etapa 1:",
     compactJson(input.analysisResult),
@@ -119,6 +145,7 @@ export function buildClientIdentificationEnrichmentUserPrompt(input: {
   duplicateValidation: ClientDuplicateValidationPromptResult;
   matchedCustomer: CustomerSummary | null;
   request: ClientIdentificationRequest;
+  siteContext?: SiteAgentContextSummary | null;
 }): string {
   return [
     "Voce finaliza a identificacao do cliente para persistencia no Linvo AI.",
@@ -131,6 +158,9 @@ export function buildClientIdentificationEnrichmentUserPrompt(input: {
     `URL: ${input.request.url}`,
     `Titulo: ${input.request.pageTitle}`,
     `Selecao: ${redactSensitiveText(input.request.selectedText)}`,
+    "",
+    "Contexto operacional salvo do site:",
+    formatSiteContext(input.siteContext),
     "",
     "Analise da etapa 1:",
     compactJson(input.analysisResult),

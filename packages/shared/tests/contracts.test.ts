@@ -15,7 +15,10 @@ import {
   customerDeleteResponseSchema,
   customerUpdateRequestSchema,
   customerUpdateResponseSchema,
-  customersListResponseSchema
+  customersListResponseSchema,
+  siteAgentContextSummarySchema,
+  siteContextDeleteRequestSchema,
+  siteContextGetResponseSchema
 } from "../src";
 
 describe("shared contracts", () => {
@@ -92,6 +95,51 @@ describe("shared contracts", () => {
         warnings: ["Nao confirmado"]
       }).success
     ).toBe(true);
+  });
+
+  it("validates site agent context contracts", () => {
+    const siteContext = siteAgentContextSummarySchema.parse({
+      confidence: 0.88,
+      createdAt: "2026-06-03T12:00:00.000Z",
+      domain: "painel.nvoip.com.br",
+      focusRules: ["Prefira o chat aberto e o header do atendimento."],
+      id: "33333333-3333-4333-8333-333333333333",
+      ignoreRules: ["Ignore menus de navegacao e textos da extensao."],
+      regions: [
+        {
+          description: "Sidebar principal com navegacao do sistema.",
+          kind: "main_sidebar",
+          label: "Sidebar principal"
+        },
+        {
+          description: "Lista interna de contatos e filas.",
+          kind: "contact_list",
+          label: "Lista de contatos"
+        },
+        {
+          description: "Chat aberto com o atendimento ativo.",
+          kind: "active_chat",
+          label: "Chat ativo"
+        }
+      ],
+      sourceRequestId: "req-1",
+      summary: "A tela possui sidebar, lista de contatos e chat ativo.",
+      updatedAt: "2026-06-03T12:00:00.000Z"
+    });
+
+    expect(siteContext.regions.map((region) => region.kind)).toContain("active_chat");
+    expect(
+      siteContextGetResponseSchema.safeParse({
+        domain: "painel.nvoip.com.br",
+        siteContext,
+        status: "ok"
+      }).success
+    ).toBe(true);
+    expect(
+      siteContextDeleteRequestSchema.parse({
+        domain: "painel.nvoip.com.br"
+      }).domain
+    ).toBe("painel.nvoip.com.br");
   });
 
   it("validates client info open request and responses", () => {

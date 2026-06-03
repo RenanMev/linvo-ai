@@ -47,6 +47,7 @@ model User {
   identificationRuns  IdentificationRun[]
   passwordResetTokens  PasswordResetToken[]
   refreshSessions     RefreshSession[]
+  siteAgentContexts   SiteAgentContext[]
 }
 
 model RefreshSession {
@@ -165,8 +166,30 @@ model IdentificationRun {
   customer           Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
   customerCase       CustomerCase? @relation(fields: [customerCaseId], references: [id], onDelete: SetNull)
   user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  siteAgentContexts  SiteAgentContext[] @relation("SiteContextSourceRun")
 
   @@unique([userId, requestId])
   @@index([userId, domain, createdAt])
   @@index([userId, domain, bulkBatchId])
+}
+
+model SiteAgentContext {
+  id              String             @id @default(uuid()) @db.Uuid
+  userId          String             @db.Uuid
+  domain          String
+  summary         String             @db.Text
+  regionsJson     Json               @default("[]")
+  focusRulesJson  Json               @default("[]")
+  ignoreRulesJson Json               @default("[]")
+  confidence      Decimal            @db.Decimal(4, 3)
+  sourceRequestId String
+  sourceRunId     String?            @db.Uuid
+  createdAt       DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
+  sourceRun       IdentificationRun? @relation("SiteContextSourceRun", fields: [sourceRunId], references: [id], onDelete: SetNull)
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domain])
+  @@index([userId, updatedAt])
+  @@index([sourceRunId])
 }
