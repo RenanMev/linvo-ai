@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -20,12 +20,12 @@ function assetFileNames(assetInfo) {
     : "assets/[name]-[hash][extname]";
 }
 
-async function buildEntry({ emptyOutDir, entry, fileName, format, name }) {
+async function buildEntry({ entry, fileName, format, name }) {
   return build({
     configFile,
     build: {
       cssCodeSplit: false,
-      emptyOutDir,
+      emptyOutDir: false,
       lib: {
         entry,
         fileName: () => fileName,
@@ -45,26 +45,21 @@ async function buildEntry({ emptyOutDir, entry, fileName, format, name }) {
 }
 
 async function run() {
-  if (!watch) {
-    await rm(outdir, { force: true, recursive: true });
-  }
+  await copyStatic();
 
   await buildEntry({
-    emptyOutDir: true,
     entry: resolve(root, "src", "sidepanel", "index.tsx"),
     fileName: "sidepanel.js",
     format: "es",
     name: "LinvoAiSidepanel"
   });
   await buildEntry({
-    emptyOutDir: false,
     entry: resolve(root, "src", "content", "index.ts"),
     fileName: "content.js",
     format: "iife",
     name: "LinvoAiContent"
   });
   await buildEntry({
-    emptyOutDir: false,
     entry: resolve(root, "src", "background", "index.ts"),
     fileName: "background.js",
     format: "es",

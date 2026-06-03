@@ -7,7 +7,8 @@ import {
   clientIdentificationDecisionRequestSchema,
   customerDeleteRequestSchema,
   customerUpdateRequestSchema,
-  clientIdentificationRequestSchema
+  clientIdentificationRequestSchema,
+  siteContextDeleteRequestSchema
 } from "@linvo-ai/shared";
 
 import type { AuthenticatedUser } from "../auth/auth.types";
@@ -87,6 +88,29 @@ export class ClientIdentificationController {
       request.user.id,
       domain?.trim() ? domain.trim().toLowerCase() : undefined
     );
+  }
+
+  @Get("site-context")
+  getSiteContext(
+    @Query("domain") domain: string | undefined,
+    @Req() request: { user: AuthenticatedUser }
+  ) {
+    if (!domain?.trim()) {
+      throw new ApiHttpException(400, "INVALID_REQUEST", "Dominio obrigatorio para carregar contexto.");
+    }
+
+    return this.service.getSiteContext(request.user.id, domain);
+  }
+
+  @Post("site-context/delete")
+  deleteSiteContext(@Body() body: unknown, @Req() request: { user: AuthenticatedUser }) {
+    const parsed = siteContextDeleteRequestSchema.safeParse(body);
+
+    if (!parsed.success) {
+      throw new ApiHttpException(400, "INVALID_REQUEST", "Dominio invalido para remover contexto.");
+    }
+
+    return this.service.deleteSiteContext(request.user.id, parsed.data.domain);
   }
 
   @Post("customers/update")

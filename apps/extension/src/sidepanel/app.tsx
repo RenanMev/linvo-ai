@@ -6,34 +6,15 @@ import type {
   BulkClientIdentificationCandidate,
   ClientIdentificationApiResponse,
   ClientIdentificationDecisionResponse,
-  CustomerSummary
+  CustomerSummary,
+  SiteAgentContextSummary
 } from "@linvo-ai/shared";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle
-} from "@/components/ui/card";
-import {
-  Field,
-  FieldDescription,
-  FieldLabel
-} from "@/components/ui/field";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { LoadingInfo } from "@/components/ui/loading-info";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { LogOutIcon } from "lucide-react";
+import { LogOutIcon, PaletteIcon } from "lucide-react";
 
 import type {
   BulkIdentificationUpdatedMessage,
@@ -41,17 +22,6 @@ import type {
   IdentificationUpdatedMessage,
   RuntimeResponseMessage
 } from "../lib/runtime-messages";
-import {
-  CLIENT_ANCHOR_MENU_ENABLED_STORAGE_KEY,
-  CLIENT_ANCHOR_MENU_PLACEMENT_STORAGE_KEY,
-  type ClientAnchorPlacementPreference,
-  getClientAnchorMenuEnabled,
-  getClientAnchorMenuPlacement,
-  normalizeClientAnchorMenuEnabled,
-  normalizeClientAnchorMenuPlacement,
-  saveClientAnchorMenuEnabled,
-  saveClientAnchorMenuPlacement
-} from "../lib/client-anchor-preferences";
 import { CLIENT_INFO_OPEN_SELECTION_STORAGE_KEY } from "../lib/runtime-messages";
 import { AuthView } from "./auth-view";
 import { BulkCandidatesView } from "./bulk-candidates-view";
@@ -61,11 +31,15 @@ import {
   type ContactIdentifierDrafts
 } from "./contacts-view";
 import { CustomerView } from "./customer-view";
+import { DesignSystemView } from "./design-system-view";
+import { SiteContextView } from "./site-context-view";
 
 type SessionState =
   | { status: "checking" }
   | { status: "logged_out"; message?: string }
   | { status: "logged_in"; user: AuthUser };
+
+type SidepanelScreen = "assistant" | "design-system";
 
 const EMPTY_IDENTIFIER_DRAFTS: ContactIdentifierDrafts = {
   document: "",
@@ -80,6 +54,22 @@ const EMPTY_CASE_DRAFT: ContactCaseDraft = {
   subject: ""
 };
 const CLIENT_INFO_OPEN_SELECTION_TTL_MS = 5 * 60 * 1_000;
+
+function screenFromHash(): SidepanelScreen {
+  return globalThis.location.hash.startsWith("#design-system")
+    ? "design-system"
+    : "assistant";
+}
+
+function hasChromeRuntime(): boolean {
+  return typeof chrome !== "undefined" &&
+    Boolean(chrome.runtime?.sendMessage);
+}
+
+function hasChromeMessageBus(): boolean {
+  return typeof chrome !== "undefined" &&
+    Boolean(chrome.runtime?.onMessage);
+}
 
 interface PendingClientInfoOpenSelection {
   customerId?: unknown;
@@ -122,7 +112,9 @@ function resultFromDecision(
       pendingClient: null,
       recentCustomers: decision.recentCustomers,
       saveState: decision.saved ? "known" : "low_confidence",
-      saved: decision.saved
+      saved: decision.saved,
+      siteContext: decision.siteContext,
+      siteContextStatus: decision.siteContextStatus
     };
   }
 
@@ -174,12 +166,18 @@ async function readPendingClientInfoOpenCustomerId(): Promise<string | null> {
 }
 
 export function App() {
+  const [sidepanelScreen, setSidepanelScreen] =
+    useState<SidepanelScreen>(() => screenFromHash());
   const [session, setSession] = useState<SessionState>({ status: "checking" });
   const [result, setResult] = useState<ClientIdentificationApiResponse | null>(null);
   const [bulkResult, setBulkResult] = useState<BulkClientIdentificationApiResponse | null>(null);
   const [contacts, setContacts] = useState<CustomerSummary[]>([]);
   const [contactsError, setContactsError] = useState("");
   const [contactsLoading, setContactsLoading] = useState(false);
+  const [siteContext, setSiteContext] = useState<SiteAgentContextSummary | null>(null);
+  const [siteContextError, setSiteContextError] = useState("");
+  const [siteContextLoading, setSiteContextLoading] = useState(false);
+  const [siteContextOpen, setSiteContextOpen] = useState(false);
   const [decisionLoading, setDecisionLoading] = useState<"accept" | "reject" | null>(null);
   const [bulkDecisionLoading, setBulkDecisionLoading] = useState(false);
   const [bulkDeleteLoadingIds, setBulkDeleteLoadingIds] = useState<Set<string>>(new Set());
@@ -192,13 +190,27 @@ export function App() {
   const [contactNotesDraft, setContactNotesDraft] = useState("");
   const [contactSaving, setContactSaving] = useState(false);
   const [contactDeletingId, setContactDeletingId] = useState<string | null>(null);
-  const [clientAnchorEnabled, setClientAnchorEnabled] = useState(true);
-  const [clientAnchorPlacement, setClientAnchorPlacement] =
-    useState<ClientAnchorPlacementPreference>("smart");
-  const [clientAnchorSaving, setClientAnchorSaving] = useState(false);
-  const [clientAnchorNotice, setClientAnchorNotice] = useState("");
 
   useEffect(() => {
+    const listener = () => setSidepanelScreen(screenFromHash());
+
+    globalThis.addEventListener("hashchange", listener);
+    return () => globalThis.removeEventListener("hashchange", listener);
+  }, []);
+
+  useEffect(() => {
+    if (sidepanelScreen !== "assistant") {
+      return;
+    }
+
+    if (!hasChromeRuntime()) {
+      setSession({
+        message: "Preview local ativo. Abra a extensao no Chrome para autenticar.",
+        status: "logged_out"
+      });
+      return;
+    }
+
     void chrome.runtime.sendMessage({ type: "auth/me" }).then((response: RuntimeResponseMessage) => {
       if (response.ok && "user" in response && response.user) {
         setSession({ status: "logged_in", user: response.user });
@@ -210,9 +222,17 @@ export function App() {
     }).catch(() => {
       setSession({ status: "logged_out", message: "Nao foi possivel restaurar a sessao." });
     });
-  }, []);
+  }, [sidepanelScreen]);
 
   useEffect(() => {
+    if (sidepanelScreen !== "assistant") {
+      return;
+    }
+
+    if (!hasChromeMessageBus()) {
+      return;
+    }
+
     const listener = (
       message:
         | IdentificationUpdatedMessage
@@ -223,6 +243,12 @@ export function App() {
         setResult(message.response);
 
         if (message.response.status === "ok") {
+          setSiteContext(message.response.siteContext);
+          setSiteContextError(
+            message.response.siteContextStatus === "unavailable"
+              ? "O cliente foi identificado, mas o contexto do site nao pode ser atualizado agora."
+              : ""
+          );
           void loadContacts();
         }
       }
@@ -240,6 +266,7 @@ export function App() {
           setContacts(message.response.customers);
           setSelectedContactId(message.response.customer.id);
           setContactsError("");
+          void loadSiteContext(message.response.domain);
           return;
         }
 
@@ -252,52 +279,23 @@ export function App() {
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, []);
-
-  useEffect(() => {
-    void Promise.all([
-      getClientAnchorMenuEnabled(),
-      getClientAnchorMenuPlacement()
-    ])
-      .then(([enabled, placement]) => {
-        setClientAnchorEnabled(enabled);
-        setClientAnchorPlacement(placement);
-      })
-      .catch(() => {
-        setClientAnchorEnabled(true);
-        setClientAnchorPlacement("smart");
-      });
-
-    const listener: Parameters<
-      typeof chrome.storage.onChanged.addListener
-    >[0] = (changes, areaName) => {
-      if (areaName !== "sync") {
-        return;
-      }
-
-      if (CLIENT_ANCHOR_MENU_ENABLED_STORAGE_KEY in changes) {
-        setClientAnchorEnabled(
-          normalizeClientAnchorMenuEnabled(
-            changes[CLIENT_ANCHOR_MENU_ENABLED_STORAGE_KEY]?.newValue
-          )
-        );
-      }
-
-      if (CLIENT_ANCHOR_MENU_PLACEMENT_STORAGE_KEY in changes) {
-        setClientAnchorPlacement(
-          normalizeClientAnchorMenuPlacement(
-            changes[CLIENT_ANCHOR_MENU_PLACEMENT_STORAGE_KEY]?.newValue
-          )
-        );
-      }
-    };
-
-    chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
-  }, []);
+  }, [sidepanelScreen]);
 
   const selectedContact =
     contacts.find((customer) => customer.id === selectedContactId) ?? contacts[0] ?? null;
+
+  useEffect(() => {
+    if (
+      sidepanelScreen !== "assistant" ||
+      session.status !== "logged_in" ||
+      !selectedContact?.domain ||
+      !hasChromeRuntime()
+    ) {
+      return;
+    }
+
+    void loadSiteContext(selectedContact.domain);
+  }, [sidepanelScreen, session.status, selectedContact?.domain]);
 
   useEffect(() => {
     if (!selectedContact) {
@@ -348,6 +346,69 @@ export function App() {
     }
   }
 
+  async function loadSiteContext(domain: string) {
+    setSiteContextLoading(true);
+    setSiteContextError("");
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        domain,
+        type: "assist/site-context.get"
+      }) as RuntimeResponseMessage;
+
+      if (!response.ok) {
+        setSiteContextError(response.error.message);
+        return;
+      }
+
+      if ("response" in response && response.response.status === "ok" && "siteContext" in response.response) {
+        setSiteContext(response.response.siteContext);
+      }
+    } catch {
+      setSiteContextError("Nao foi possivel carregar o contexto do site.");
+    } finally {
+      setSiteContextLoading(false);
+    }
+  }
+
+  async function handleDeleteSiteContext() {
+    if (!siteContext) {
+      return;
+    }
+
+    const confirmed = globalThis.confirm("Remover o contexto salvo deste site?");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setSiteContextLoading(true);
+    setSiteContextError("");
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        request: {
+          domain: siteContext.domain
+        },
+        type: "assist/site-context.delete"
+      }) as RuntimeResponseMessage;
+
+      if (!response.ok) {
+        setSiteContextError(response.error.message);
+        return;
+      }
+
+      if ("response" in response && response.response.status === "ok" && "deleted" in response.response) {
+        setSiteContext(null);
+        setSiteContextOpen(false);
+      }
+    } catch {
+      setSiteContextError("Nao foi possivel remover o contexto do site.");
+    } finally {
+      setSiteContextLoading(false);
+    }
+  }
+
   async function handleDecision(decision: "accept" | "reject") {
     if (!result || result.status !== "ok") {
       return;
@@ -375,7 +436,15 @@ export function App() {
 
       if ("response" in response && response.response.status === "ok" && "decision" in response.response) {
         void loadContacts();
-        setResult(resultFromDecision(result, response.response));
+        const nextResult = resultFromDecision(result, response.response);
+
+        setSiteContext(response.response.siteContext);
+        setSiteContextError(
+          response.response.siteContextStatus === "unavailable"
+            ? "O cliente foi atualizado, mas o contexto do site nao pode ser salvo agora."
+            : ""
+        );
+        setResult(nextResult);
         return;
       }
 
@@ -608,48 +677,46 @@ export function App() {
     }
   }
 
-  async function handleClientAnchorToggle(enabled: boolean) {
-    setClientAnchorSaving(true);
-    setClientAnchorNotice("");
+  function openAssistantScreen() {
+    setSidepanelScreen("assistant");
 
-    try {
-      const saved = await saveClientAnchorMenuEnabled(enabled);
-      setClientAnchorEnabled(saved);
-      setClientAnchorNotice(
-        saved
-          ? "Icone inteligente ativado."
-          : "Icone inteligente desativado."
+    if (globalThis.location.hash.startsWith("#design-system")) {
+      globalThis.history.replaceState(
+        null,
+        "",
+        `${globalThis.location.pathname}${globalThis.location.search}`
       );
-    } catch {
-      setClientAnchorNotice("Nao foi possivel salvar essa opcao agora.");
-    } finally {
-      setClientAnchorSaving(false);
     }
   }
 
-  async function handleClientAnchorPlacementChange(
-    placement: ClientAnchorPlacementPreference
-  ) {
-    setClientAnchorSaving(true);
-    setClientAnchorNotice("");
+  function openDesignSystemScreen() {
+    setSidepanelScreen("design-system");
 
-    try {
-      const saved = await saveClientAnchorMenuPlacement(placement);
-      setClientAnchorPlacement(saved);
-      setClientAnchorNotice("Posicao do icone salva.");
-    } catch {
-      setClientAnchorNotice("Nao foi possivel salvar a posicao agora.");
-    } finally {
-      setClientAnchorSaving(false);
+    if (globalThis.location.hash !== "#design-system") {
+      globalThis.location.hash = "design-system";
     }
+  }
+
+  if (sidepanelScreen === "design-system") {
+    return (
+      <TooltipProvider>
+        <DesignSystemView onBack={openAssistantScreen} />
+        <Toaster position="bottom-right" />
+      </TooltipProvider>
+    );
   }
 
   if (session.status === "checking") {
     return (
-      <main className="min-h-screen bg-background p-4 text-sm">
-        <Card>
-          <CardContent className="py-4 text-muted-foreground">Carregando...</CardContent>
-        </Card>
+      <main className="linvo-auth-screen">
+        <section className="linvo-auth-card linvo-auth-loading linvo-motion-rise" aria-live="polite">
+          <LoadingInfo
+            className="linvo-loading-info-bare"
+            description="Validando sua conta e preparando o painel."
+            skeletonLines={3}
+            title="Sincronizando sessao"
+          />
+        </section>
       </main>
     );
   }
@@ -657,7 +724,21 @@ export function App() {
   if (session.status === "logged_out") {
     return (
       <TooltipProvider>
-        <main className="min-h-screen bg-background p-4">
+        <main className="linvo-auth-screen">
+          <header className="linvo-auth-topbar">
+            <div>
+              <strong>Linvo AI</strong>
+              <span>Atendimento com IA</span>
+            </div>
+            <button
+              className="linvo-auth-design-button"
+              type="button"
+              onClick={openDesignSystemScreen}
+            >
+              <PaletteIcon className="size-4" />
+              Design system
+            </button>
+          </header>
           <AuthView
             {...(session.message ? { message: session.message } : {})}
             onAuthenticated={(user) => {
@@ -673,87 +754,51 @@ export function App() {
 
   return (
     <TooltipProvider>
-      <main className="grid min-h-screen gap-3 bg-background p-4">
-        <header className="flex items-center justify-between gap-3">
+      <main className="linvo-main-shell grid min-h-screen gap-3 bg-background p-4">
+        <header className="linvo-motion-rise flex items-center justify-between gap-3">
           <div className="grid min-w-0 gap-0.5">
             <strong className="truncate text-base">Linvo AI</strong>
             <span className="truncate text-xs text-muted-foreground">{session.user.email}</span>
           </div>
-          <Button
-            size="sm"
-            type="button"
-            variant="outline"
-            onClick={() => {
-              void chrome.runtime.sendMessage({ type: "auth/logout" });
-              setSession({ status: "logged_out" });
-              setResult(null);
-              setBulkResult(null);
-              setContacts([]);
-              setSelectedContactId(null);
-            }}
-          >
-            <LogOutIcon className="size-4" />
-            Sair
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              type="button"
+              variant="outline"
+              onClick={openDesignSystemScreen}
+            >
+              <PaletteIcon className="size-4" />
+              Sistema
+            </Button>
+            <Button
+              size="sm"
+              type="button"
+              variant="outline"
+              onClick={() => {
+                void chrome.runtime.sendMessage({ type: "auth/logout" });
+                setSession({ status: "logged_out" });
+                setResult(null);
+                setBulkResult(null);
+                setContacts([]);
+                setSelectedContactId(null);
+                setSiteContext(null);
+                setSiteContextError("");
+                setSiteContextOpen(false);
+              }}
+            >
+              <LogOutIcon className="size-4" />
+              Sair
+            </Button>
+          </div>
         </header>
-        <Card className="border-teal-900/20 bg-slate-950 text-slate-50">
-          <CardHeader className="flex items-start justify-between gap-3">
-            <div className="grid gap-1">
-              <CardTitle className="text-base">Icone inteligente</CardTitle>
-              <CardDescription className="text-teal-100/80">
-                A IA ancora o icone perto do cliente identificado.
-              </CardDescription>
-            </div>
-            <Badge variant={clientAnchorEnabled ? "linvo" : "secondary"}>
-              {clientAnchorEnabled ? "Ativo" : "Desligado"}
-            </Badge>
-          </CardHeader>
-          <CardContent className="grid gap-3">
-            <Field className="grid grid-cols-[1fr_auto] items-start gap-3 rounded-lg border border-white/10 bg-white/5 p-3">
-              <span className="grid gap-1">
-                <FieldLabel className="text-slate-50">Fixar novo icone no cliente</FieldLabel>
-                <FieldDescription className="text-teal-100/80">
-                  Guarda a escolha por pagina e reaparece quando o cliente for reconhecido.
-                </FieldDescription>
-              </span>
-              <Switch
-                checked={clientAnchorEnabled}
-                disabled={clientAnchorSaving}
-                onCheckedChange={(checked) => {
-                  void handleClientAnchorToggle(checked);
-                }}
-              />
-            </Field>
-            <Field>
-              <FieldLabel className="text-teal-100" htmlFor="client-anchor-placement">
-                Onde fixar
-              </FieldLabel>
-              <Select
-                value={clientAnchorPlacement}
-                disabled={!clientAnchorEnabled || clientAnchorSaving}
-                onValueChange={(value) => {
-                  void handleClientAnchorPlacementChange(
-                    normalizeClientAnchorMenuPlacement(value)
-                  );
-                }}
-              >
-                <SelectTrigger id="client-anchor-placement" className="border-white/10 bg-white/10 text-slate-50">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="smart">Automatico</SelectItem>
-                  <SelectItem value="right">Direita do cliente</SelectItem>
-                  <SelectItem value="left">Esquerda do cliente</SelectItem>
-                  <SelectItem value="top">Acima do cliente</SelectItem>
-                  <SelectItem value="bottom">Abaixo do cliente</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-            {clientAnchorNotice ? (
-              <p className="text-xs text-teal-100">{clientAnchorNotice}</p>
-            ) : null}
-          </CardContent>
-        </Card>
+        <SiteContextView
+          errorMessage={siteContextError}
+          loading={siteContextLoading}
+          onDelete={handleDeleteSiteContext}
+          onToggle={() => setSiteContextOpen((current) => !current)}
+          open={siteContextOpen}
+          siteContext={siteContext}
+        />
         <CustomerView
           decisionLoading={decisionLoading}
           onDecision={handleDecision}

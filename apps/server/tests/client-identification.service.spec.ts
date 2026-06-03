@@ -4,7 +4,9 @@ import type {
   ClientInfoOpenRequest,
   ClientIdentificationRequest,
   CustomerSummary,
-  PendingClientSummary
+  PendingClientSummary,
+  SiteAgentContextDraft,
+  SiteAgentContextSummary
 } from "@linvo-ai/shared";
 
 import { ClientIdentificationService } from "../src/assist/client-identification.service";
@@ -87,6 +89,46 @@ const pendingClient: PendingClientSummary = {
   maskedIdentifiers: { protocol: "140987001" }
 };
 
+const siteContext: SiteAgentContextSummary = {
+  confidence: 0.88,
+  createdAt: new Date().toISOString(),
+  domain: "painel.nvoip.com.br",
+  focusRules: ["Prefira o chat aberto e o header do atendimento."],
+  id: "33333333-3333-4333-8333-333333333333",
+  ignoreRules: ["Ignore menus de navegacao e textos da extensao Linvo AI."],
+  regions: [
+    {
+      description: "Sidebar principal com navegacao do sistema.",
+      evidence: [],
+      kind: "main_sidebar",
+      label: "Sidebar principal"
+    },
+    {
+      description: "Lista interna de contatos e filas.",
+      evidence: [],
+      kind: "contact_list",
+      label: "Lista de contatos"
+    },
+    {
+      description: "Chat aberto com o atendimento ativo.",
+      evidence: [],
+      kind: "active_chat",
+      label: "Chat ativo"
+    }
+  ],
+  sourceRequestId: "req-1",
+  summary: "A tela possui sidebar, lista interna de contatos, chat ativo e header.",
+  updatedAt: new Date().toISOString()
+};
+
+const siteContextDraft: SiteAgentContextDraft = {
+  confidence: siteContext.confidence,
+  focusRules: siteContext.focusRules,
+  ignoreRules: siteContext.ignoreRules,
+  regions: siteContext.regions,
+  summary: siteContext.summary
+};
+
 const bulkRequest: BulkClientIdentificationRequest = {
   capturedAt: new Date().toISOString(),
   items: [
@@ -135,6 +177,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   const aiClient = {
     analyzeClientIdentification: vi.fn().mockResolvedValue(aiResult),
     enrichClientIdentification: vi.fn().mockResolvedValue(aiResult),
+    generateSiteContextDraft: vi.fn().mockResolvedValue(siteContextDraft),
     identifyClient: vi.fn().mockResolvedValue(aiResult),
     selectClientInfo: vi.fn().mockResolvedValue(null),
     validateClientDuplicate: vi.fn().mockResolvedValue({
@@ -171,13 +214,26 @@ function createService(overrides: Record<string, unknown> = {}) {
     updateCustomer: vi.fn(),
     ...overrides
   };
+  const siteContextRepository = {
+    deleteByDomain: vi.fn().mockResolvedValue(false),
+    getByDomain: vi.fn().mockResolvedValue(null),
+    upsertDraft: vi.fn().mockResolvedValue({
+      siteContext,
+      status: "created"
+    }),
+    upsertFromRun: vi.fn().mockResolvedValue({
+      siteContext,
+      status: "created"
+    })
+  };
   const service = new ClientIdentificationService(
     aiClient as never,
     config,
-    repository as never
+    repository as never,
+    siteContextRepository as never
   );
 
-  return { aiClient, repository, service };
+  return { aiClient, repository, service, siteContextRepository };
 }
 
 describe("ClientIdentificationService", () => {
@@ -200,6 +256,27 @@ describe("ClientIdentificationService", () => {
     expect(aiClient.selectClientInfo).toHaveBeenCalledWith({
       customers: [customer],
       request: clientInfoOpenRequest
+    });
+  });
+
+  it("passes saved site context into client info open prompts", async () => {
+    const { aiClient, service, siteContextRepository } = createService({
+      listRecentCustomers: vi.fn().mockResolvedValue([customer])
+    });
+    siteContextRepository.getByDomain.mockResolvedValue(siteContext);
+    aiClient.selectClientInfo.mockResolvedValue({
+      confidence: 0.92,
+      customerId: customer.id,
+      evidence: ["Nome e protocolo batem com o cliente salvo."],
+      status: "ok"
+    });
+
+    await service.openClientInfo("user-1", clientInfoOpenRequest);
+
+    expect(aiClient.selectClientInfo).toHaveBeenCalledWith({
+      customers: [customer],
+      request: clientInfoOpenRequest,
+      siteContext
     });
   });
 
@@ -260,6 +337,23 @@ describe("ClientIdentificationService", () => {
     expect(repository.saveConfirmedIdentification).not.toHaveBeenCalled();
   });
 
+  it("does not create site context for low-confidence identification", async () => {
+    const { aiClient, service, siteContextRepository } = createService();
+    aiClient.enrichClientIdentification.mockResolvedValue({
+      activeClient: null,
+      case: null,
+      confidence: 0.41,
+      evidence: [],
+      warnings: []
+    });
+
+    const response = await service.identify("user-1", request);
+
+    expect(response.saveState).toBe("low_confidence");
+    expect(response.siteContextStatus).toBe("missing");
+    expect(siteContextRepository.upsertDraft).not.toHaveBeenCalled();
+  });
+
   it("uses AI duplicate validation to update a matched existing customer", async () => {
     const { aiClient, repository, service } = createService({
       listRecentCustomers: vi.fn().mockResolvedValue([customer]),
@@ -280,10 +374,18 @@ describe("ClientIdentificationService", () => {
 
     expect(response.saveState).toBe("known");
     expect(response.saved).toBe(true);
+    expect(response.siteContextStatus).toBe("created");
+    expect(response.siteContext?.summary).toContain("sidebar");
     expect(response.activeClient?.id).toBe(customer.id);
     expect(aiClient.enrichClientIdentification).toHaveBeenCalledWith(
       expect.objectContaining({
         matchedCustomer: customer
+      })
+    );
+    expect(aiClient.generateSiteContextDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        analysisResult: aiResult,
+        request
       })
     );
     expect(repository.saveConfirmedIdentification).toHaveBeenCalledWith(
@@ -293,6 +395,32 @@ describe("ClientIdentificationService", () => {
       })
     );
     expect(repository.savePendingIdentification).not.toHaveBeenCalled();
+  });
+
+  it("injects saved site context into identification prompts", async () => {
+    const { aiClient, service, siteContextRepository } = createService({
+      findExistingCustomer: vi.fn().mockResolvedValue(customer),
+      listRecentCustomers: vi.fn().mockResolvedValue([customer]),
+      saveConfirmedIdentification: vi.fn().mockResolvedValue({
+        caseSummary: customer.cases[0],
+        customerSummary: customer
+      })
+    });
+    siteContextRepository.getByDomain.mockResolvedValue(siteContext);
+
+    await service.identify("user-1", request);
+
+    expect(aiClient.analyzeClientIdentification).toHaveBeenCalledWith(request, siteContext);
+    expect(aiClient.validateClientDuplicate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        siteContext
+      })
+    );
+    expect(aiClient.enrichClientIdentification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        siteContext
+      })
+    );
   });
 
   it("marks known customers as saved without asking again", async () => {
@@ -309,12 +437,13 @@ describe("ClientIdentificationService", () => {
 
     expect(response.saveState).toBe("known");
     expect(response.saved).toBe(true);
+    expect(response.siteContextStatus).toBe("created");
     expect(response.activeClient?.displayName).toBe("Davi");
     expect(repository.savePendingIdentification).not.toHaveBeenCalled();
   });
 
   it("accepts a pending candidate and returns the updated list", async () => {
-    const { repository, service } = createService({
+    const { repository, service, siteContextRepository } = createService({
       decidePendingIdentification: vi.fn().mockResolvedValue({
         activeClient: customer,
         domain: "painel.nvoip.com.br",
@@ -330,7 +459,12 @@ describe("ClientIdentificationService", () => {
 
     expect(response.saved).toBe(true);
     expect(response.activeClient?.displayName).toBe("Davi");
+    expect(response.siteContextStatus).toBe("created");
     expect(response.recentCustomers).toHaveLength(1);
+    expect(siteContextRepository.upsertFromRun).toHaveBeenCalledWith({
+      requestId: "req-1",
+      userId: "user-1"
+    });
   });
 
   it("rejects a pending candidate and returns no active client", async () => {

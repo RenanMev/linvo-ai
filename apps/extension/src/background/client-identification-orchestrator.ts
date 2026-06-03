@@ -11,12 +11,15 @@ import { CLIENT_INFO_OPEN_SELECTION_STORAGE_KEY } from "../lib/runtime-messages"
 import {
   clearAuthSession,
   getAuthSession,
-  setAuthSession
+  setAuthSession,
+  type StoredAuthSession
 } from "../lib/auth-session";
 import {
   decideBulkClientIdentification,
   decideClientIdentification,
   deleteCustomer,
+  deleteSiteContext,
+  getSiteContext,
   identifyClient,
   identifyClientsBulk,
   isApiClientError,
@@ -37,6 +40,21 @@ function runtimeErrorResponse(error: unknown, fallbackMessage: string): RuntimeR
     },
     ok: false
   };
+}
+
+async function sendAuthRequiredResponse(input: {
+  fallbackMessage: string;
+  sender: chrome.runtime.MessageSender;
+  sendResponse: (response: RuntimeResponseMessage) => void;
+}): Promise<void> {
+  await openSidePanel(input.sender);
+  input.sendResponse({
+    error: {
+      errorCode: "AUTH_REQUIRED",
+      message: input.fallbackMessage
+    },
+    ok: false
+  });
 }
 
 async function captureScreenshot(sender: chrome.runtime.MessageSender): Promise<string | undefined> {
@@ -62,20 +80,6 @@ async function captureScreenshot(sender: chrome.runtime.MessageSender): Promise<
   return undefined;
 }
 
-async function getAccessToken(): Promise<string | null> {
-  const session = await getAuthSession();
-
-  if (!session) {
-    return null;
-  }
-
-  try {
-    return session.tokens.accessToken;
-  } catch {
-    return null;
-  }
-}
-
 async function openSidePanel(sender: chrome.runtime.MessageSender): Promise<void> {
   try {
     if (chrome.sidePanel?.open && sender.tab?.id !== undefined) {
@@ -83,6 +87,48 @@ async function openSidePanel(sender: chrome.runtime.MessageSender): Promise<void
     }
   } catch {
     // Opening the panel is best-effort; the API response still matters.
+  }
+}
+
+function isAuthError(error: unknown): boolean {
+  return isApiClientError(error) &&
+    (error.errorCode === "AUTH_REQUIRED" || error.errorCode === "REFRESH_TOKEN_INVALID");
+}
+
+async function clearAuthSessionForAuthError(error: unknown): Promise<void> {
+  if (isAuthError(error)) {
+    await clearAuthSession();
+  }
+}
+
+async function requestWithAuthRefresh<T>(
+  session: StoredAuthSession,
+  request: (accessToken: string) => Promise<T>
+): Promise<T> {
+  try {
+    return await request(session.tokens.accessToken);
+  } catch (error) {
+    if (!isAuthError(error)) {
+      throw error;
+    }
+
+    let tokens: StoredAuthSession["tokens"];
+
+    try {
+      tokens = await refresh(session.tokens.refreshToken);
+    } catch (refreshError) {
+      await clearAuthSessionForAuthError(refreshError);
+      throw refreshError;
+    }
+
+    await setAuthSession({ tokens, user: session.user });
+
+    try {
+      return await request(tokens.accessToken);
+    } catch (retryError) {
+      await clearAuthSessionForAuthError(retryError);
+      throw retryError;
+    }
   }
 }
 
@@ -120,7 +166,9 @@ export function handleClientIdentificationMessage(
     message.type !== "assist/client-identification.bulk.decision" &&
     message.type !== "assist/customer.delete" &&
     message.type !== "assist/customer.update" &&
-    message.type !== "assist/customers.list"
+    message.type !== "assist/customers.list" &&
+    message.type !== "assist/site-context.get" &&
+    message.type !== "assist/site-context.delete"
   ) {
     return undefined;
   }
@@ -130,37 +178,26 @@ export function handleClientIdentificationMessage(
       const session = await getAuthSession();
 
       if (!session) {
-        sendResponse({
-          error: {
-            errorCode: "AUTH_REQUIRED",
-            message: "Entre novamente para abrir informacoes do cliente."
-          },
-          ok: false
+        await sendAuthRequiredResponse({
+          fallbackMessage: "Entre no Linvo AI para abrir informacoes do cliente.",
+          sender,
+          sendResponse
         });
         return;
       }
 
-      let accessToken = await getAccessToken();
-
       try {
-        const response = await openClientInfo(
-          accessToken ?? session.tokens.accessToken,
-          message.request
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => openClientInfo(accessToken, message.request)
         );
         await publishClientInfoOpen(response, sender);
         sendResponse({ ok: true, response });
-      } catch {
-        try {
-          const tokens = await refresh(session.tokens.refreshToken);
-          await setAuthSession({ tokens, user: session.user });
-          accessToken = tokens.accessToken;
-          const response = await openClientInfo(accessToken, message.request);
-          await publishClientInfoOpen(response, sender);
-          sendResponse({ ok: true, response });
-        } catch (error) {
-          await clearAuthSession();
-          sendResponse(runtimeErrorResponse(error, "Entre novamente para abrir informacoes do cliente."));
+      } catch (error) {
+        if (isAuthError(error)) {
+          await openSidePanel(sender);
         }
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para abrir informacoes do cliente."));
       }
     })();
 
@@ -182,25 +219,72 @@ export function handleClientIdentificationMessage(
         return;
       }
 
-      let accessToken = await getAccessToken();
-
       try {
-        const response = await listCustomers(
-          accessToken ?? session.tokens.accessToken,
-          message.domain
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => listCustomers(accessToken, message.domain)
         );
         sendResponse({ ok: true, response });
-      } catch {
-        try {
-          const tokens = await refresh(session.tokens.refreshToken);
-          await setAuthSession({ tokens, user: session.user });
-          accessToken = tokens.accessToken;
-          const response = await listCustomers(accessToken, message.domain);
-          sendResponse({ ok: true, response });
-        } catch (error) {
-          await clearAuthSession();
-          sendResponse(runtimeErrorResponse(error, "Entre novamente para carregar contatos."));
-        }
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para carregar contatos."));
+      }
+    })();
+
+    return true;
+  }
+
+  if (message.type === "assist/site-context.get") {
+    void (async () => {
+      const session = await getAuthSession();
+
+      if (!session) {
+        sendResponse({
+          error: {
+            errorCode: "AUTH_REQUIRED",
+            message: "Entre novamente para carregar o contexto do site."
+          },
+          ok: false
+        });
+        return;
+      }
+
+      try {
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => getSiteContext(accessToken, message.domain)
+        );
+        sendResponse({ ok: true, response });
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para carregar o contexto do site."));
+      }
+    })();
+
+    return true;
+  }
+
+  if (message.type === "assist/site-context.delete") {
+    void (async () => {
+      const session = await getAuthSession();
+
+      if (!session) {
+        sendResponse({
+          error: {
+            errorCode: "AUTH_REQUIRED",
+            message: "Entre novamente para remover o contexto do site."
+          },
+          ok: false
+        });
+        return;
+      }
+
+      try {
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => deleteSiteContext(accessToken, message.request)
+        );
+        sendResponse({ ok: true, response });
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para remover o contexto do site."));
       }
     })();
 
@@ -222,25 +306,14 @@ export function handleClientIdentificationMessage(
         return;
       }
 
-      let accessToken = await getAccessToken();
-
       try {
-        const response = await updateCustomer(
-          accessToken ?? session.tokens.accessToken,
-          message.request
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => updateCustomer(accessToken, message.request)
         );
         sendResponse({ ok: true, response });
-      } catch {
-        try {
-          const tokens = await refresh(session.tokens.refreshToken);
-          await setAuthSession({ tokens, user: session.user });
-          accessToken = tokens.accessToken;
-          const response = await updateCustomer(accessToken, message.request);
-          sendResponse({ ok: true, response });
-        } catch (error) {
-          await clearAuthSession();
-          sendResponse(runtimeErrorResponse(error, "Entre novamente para atualizar contatos."));
-        }
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para atualizar contatos."));
       }
     })();
 
@@ -262,25 +335,14 @@ export function handleClientIdentificationMessage(
         return;
       }
 
-      let accessToken = await getAccessToken();
-
       try {
-        const response = await deleteCustomer(
-          accessToken ?? session.tokens.accessToken,
-          message.request
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => deleteCustomer(accessToken, message.request)
         );
         sendResponse({ ok: true, response });
-      } catch {
-        try {
-          const tokens = await refresh(session.tokens.refreshToken);
-          await setAuthSession({ tokens, user: session.user });
-          accessToken = tokens.accessToken;
-          const response = await deleteCustomer(accessToken, message.request);
-          sendResponse({ ok: true, response });
-        } catch (error) {
-          await clearAuthSession();
-          sendResponse(runtimeErrorResponse(error, "Entre novamente para apagar clientes."));
-        }
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para apagar clientes."));
       }
     })();
 
@@ -302,25 +364,14 @@ export function handleClientIdentificationMessage(
         return;
       }
 
-      let accessToken = await getAccessToken();
-
       try {
-        const response = await decideClientIdentification(
-          accessToken ?? session.tokens.accessToken,
-          message.request
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => decideClientIdentification(accessToken, message.request)
         );
         sendResponse({ ok: true, response });
-      } catch {
-        try {
-          const tokens = await refresh(session.tokens.refreshToken);
-          await setAuthSession({ tokens, user: session.user });
-          accessToken = tokens.accessToken;
-          const response = await decideClientIdentification(accessToken, message.request);
-          sendResponse({ ok: true, response });
-        } catch (error) {
-          await clearAuthSession();
-          sendResponse(runtimeErrorResponse(error, "Entre novamente para atualizar clientes."));
-        }
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para atualizar clientes."));
       }
     })();
 
@@ -342,25 +393,14 @@ export function handleClientIdentificationMessage(
         return;
       }
 
-      let accessToken = await getAccessToken();
-
       try {
-        const response = await decideBulkClientIdentification(
-          accessToken ?? session.tokens.accessToken,
-          message.request
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => decideBulkClientIdentification(accessToken, message.request)
         );
         sendResponse({ ok: true, response });
-      } catch {
-        try {
-          const tokens = await refresh(session.tokens.refreshToken);
-          await setAuthSession({ tokens, user: session.user });
-          accessToken = tokens.accessToken;
-          const response = await decideBulkClientIdentification(accessToken, message.request);
-          sendResponse({ ok: true, response });
-        } catch (error) {
-          await clearAuthSession();
-          sendResponse(runtimeErrorResponse(error, "Entre novamente para atualizar clientes."));
-        }
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para atualizar clientes."));
       }
     })();
 
@@ -381,34 +421,19 @@ export function handleClientIdentificationMessage(
       return;
     }
 
-    let accessToken = await getAccessToken();
-
     if (message.type === "assist/client-identification.bulk.request") {
       try {
-        const response = await identifyClientsBulk(
-          accessToken ?? session.tokens.accessToken,
-          message.request
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => identifyClientsBulk(accessToken, message.request)
         );
         chrome.runtime.sendMessage({
           response,
           type: "assist/client-identification.bulk.updated"
         });
         sendResponse({ ok: true, response });
-      } catch {
-        try {
-          const tokens = await refresh(session.tokens.refreshToken);
-          await setAuthSession({ tokens, user: session.user });
-          accessToken = tokens.accessToken;
-          const response = await identifyClientsBulk(accessToken, message.request);
-          chrome.runtime.sendMessage({
-            response,
-            type: "assist/client-identification.bulk.updated"
-          });
-          sendResponse({ ok: true, response });
-        } catch (error) {
-          await clearAuthSession();
-          sendResponse(runtimeErrorResponse(error, "Entre novamente para identificar clientes."));
-        }
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para identificar clientes."));
       }
 
       return;
@@ -421,27 +446,17 @@ export function handleClientIdentificationMessage(
     };
 
     try {
-      const response = await identifyClient(accessToken ?? session.tokens.accessToken, request);
+      const response = await requestWithAuthRefresh(
+        session,
+        (accessToken) => identifyClient(accessToken, request)
+      );
       chrome.runtime.sendMessage({
         response,
         type: "assist/client-identification.updated"
       });
       sendResponse({ ok: true, response });
-    } catch {
-      try {
-        const tokens = await refresh(session.tokens.refreshToken);
-        await setAuthSession({ tokens, user: session.user });
-        accessToken = tokens.accessToken;
-        const response = await identifyClient(accessToken, request);
-        chrome.runtime.sendMessage({
-          response,
-          type: "assist/client-identification.updated"
-        });
-        sendResponse({ ok: true, response });
-      } catch (error) {
-        await clearAuthSession();
-        sendResponse(runtimeErrorResponse(error, "Entre novamente para identificar clientes."));
-      }
+    } catch (error) {
+      sendResponse(runtimeErrorResponse(error, "Entre novamente para identificar clientes."));
     }
   })();
 

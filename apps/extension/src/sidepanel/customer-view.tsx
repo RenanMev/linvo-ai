@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { LoaderCircleIcon } from "lucide-react";
 
 interface CustomerViewProps {
   decisionLoading: "accept" | "reject" | null;
@@ -15,7 +16,7 @@ interface CustomerViewProps {
 export function CustomerView({ decisionLoading, onDecision, result }: CustomerViewProps) {
   if (!result) {
     return (
-      <Card>
+      <Card className="linvo-motion-rise">
         <CardHeader>
           <CardTitle className="text-base">Cliente atual</CardTitle>
         </CardHeader>
@@ -28,7 +29,7 @@ export function CustomerView({ decisionLoading, onDecision, result }: CustomerVi
 
   if (result.status === "error") {
     return (
-      <Card>
+      <Card className="linvo-motion-rise">
         <CardHeader>
           <CardTitle className="text-base">Cliente atual</CardTitle>
         </CardHeader>
@@ -42,7 +43,7 @@ export function CustomerView({ decisionLoading, onDecision, result }: CustomerVi
   }
 
   return (
-    <Card>
+    <Card className="linvo-motion-rise">
       <CardHeader className="flex-row items-start justify-between gap-3">
         <CardTitle className="text-base">
           {result.activeClient?.displayName ??
@@ -70,6 +71,9 @@ export function CustomerView({ decisionLoading, onDecision, result }: CustomerVi
                 variant="linvo"
                 onClick={() => onDecision("accept")}
               >
+                {decisionLoading === "accept" ? (
+                  <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+                ) : null}
                 {decisionLoading === "accept" ? "Adicionando..." : "Adicionar"}
               </Button>
               <Button
@@ -79,6 +83,9 @@ export function CustomerView({ decisionLoading, onDecision, result }: CustomerVi
                 variant="secondary"
                 onClick={() => onDecision("reject")}
               >
+                {decisionLoading === "reject" ? (
+                  <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+                ) : null}
                 {decisionLoading === "reject" ? "Ignorando..." : "Ignorar"}
               </Button>
             </span>

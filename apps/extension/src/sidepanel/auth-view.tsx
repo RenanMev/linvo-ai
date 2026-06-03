@@ -3,17 +3,17 @@ import type { FormEvent } from "react";
 
 import type { AuthUser } from "@linvo-ai/shared";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle
-} from "@/components/ui/card";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
+  ArrowLeftIcon,
+  KeyRoundIcon,
+  LockKeyholeIcon,
+  LogInIcon,
+  MailIcon,
+  ShieldCheckIcon,
+  UserIcon,
+  UserPlusIcon,
+  type LucideIcon
+} from "lucide-react";
 
 import type { RuntimeResponseMessage } from "../lib/runtime-messages";
 
@@ -23,6 +23,40 @@ interface AuthViewProps {
 }
 
 type AuthMode = "forgot" | "login" | "register" | "reset";
+
+interface AuthModeCopy {
+  description: string;
+  eyebrow: string;
+  icon: LucideIcon;
+  title: string;
+}
+
+const AUTH_MODE_COPY: Record<AuthMode, AuthModeCopy> = {
+  forgot: {
+    description: "Gere um codigo seguro para trocar sua senha.",
+    eyebrow: "Recuperacao",
+    icon: KeyRoundIcon,
+    title: "Recupere o acesso"
+  },
+  login: {
+    description: "Entre para identificar clientes e manter o contexto do atendimento.",
+    eyebrow: "Acesso seguro",
+    icon: LogInIcon,
+    title: "Entre na Linvo AI"
+  },
+  register: {
+    description: "Crie sua conta para salvar contatos e historico de atendimento.",
+    eyebrow: "Nova conta",
+    icon: UserPlusIcon,
+    title: "Comece sua base"
+  },
+  reset: {
+    description: "Informe o codigo recebido e defina uma nova senha.",
+    eyebrow: "Senha nova",
+    icon: ShieldCheckIcon,
+    title: "Redefina a senha"
+  }
+};
 
 function submitLabel(mode: AuthMode): string {
   if (mode === "forgot") {
@@ -121,106 +155,149 @@ export function AuthView({ message, onAuthenticated }: AuthViewProps) {
     }
   }
 
+  const copy = AUTH_MODE_COPY[mode];
+  const ModeIcon = copy.icon;
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-xl">Linvo AI</CardTitle>
-        <CardDescription>
-          {mode === "register"
-            ? "Crie sua conta para salvar contatos."
-            : mode === "forgot"
-              ? "Gere um codigo local para redefinir sua senha."
-              : mode === "reset"
-                ? "Informe o codigo e sua nova senha."
-                : "Entre para continuar identificando clientes."}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <form onSubmit={(event) => void submit(event)}>
-          <FieldGroup>
-            {mode !== "reset" ? (
-              <Field>
-                <FieldLabel htmlFor="auth-email">Email</FieldLabel>
-                <Input
-                  id="auth-email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  type="email"
-                  required
-                />
-              </Field>
-            ) : null}
-            {mode === "register" ? (
-              <Field>
-                <FieldLabel htmlFor="auth-name">Nome</FieldLabel>
-                <Input
-                  id="auth-name"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                />
-              </Field>
-            ) : null}
-            {mode === "reset" ? (
-              <Field>
-                <FieldLabel htmlFor="auth-reset-code">Codigo</FieldLabel>
-                <Input
-                  id="auth-reset-code"
-                  inputMode="numeric"
-                  maxLength={6}
-                  pattern="\d{6}"
-                  value={resetCode}
-                  onChange={(event) => setResetCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                  required
-                />
-              </Field>
-            ) : null}
-            {mode !== "forgot" ? (
-              <Field>
-                <FieldLabel htmlFor="auth-password">
-                  {mode === "reset" ? "Nova senha" : "Senha"}
-                </FieldLabel>
-                <Input
-                  id="auth-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  minLength={8}
-                  type="password"
-                  required
-                />
-              </Field>
-            ) : null}
-            {notice ? (
-              <Alert variant="info">
-                <AlertDescription>{notice}</AlertDescription>
-              </Alert>
-            ) : null}
-            {error ? (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            ) : null}
-            <Button disabled={pending} type="submit" variant="linvo">
-              {pending ? "Aguarde..." : submitLabel(mode)}
-            </Button>
-          </FieldGroup>
-        </form>
-        <div className="grid gap-2">
-          {mode === "login" ? (
-            <>
-              <Button variant="ghost" type="button" onClick={() => setMode("register")}>
-                Criar conta
-              </Button>
-              <Button variant="ghost" type="button" onClick={() => setMode("forgot")}>
-                Esqueci minha senha
-              </Button>
-            </>
-          ) : (
-            <Button variant="ghost" type="button" onClick={() => setMode("login")}>
-              {mode === "register" ? "Ja tenho conta" : "Voltar para login"}
-            </Button>
-          )}
+    <section className="linvo-auth-card" aria-labelledby="auth-title">
+      <div className="linvo-auth-hero">
+        <div className="linvo-auth-mark" aria-hidden="true">
+          <ModeIcon className="size-5" />
         </div>
-      </CardContent>
-    </Card>
+        <div className="linvo-auth-copy">
+          <span>{copy.eyebrow}</span>
+          <h1 id="auth-title">{copy.title}</h1>
+          <p>{copy.description}</p>
+        </div>
+        <div className="linvo-auth-chips" aria-label="Recursos da conta">
+          <span className="linvo-auth-chip linvo-auth-chip-active">IA assistiva</span>
+          <span className="linvo-auth-chip">Contatos salvos</span>
+          <span className="linvo-auth-chip">Contexto</span>
+        </div>
+      </div>
+
+      <div className="linvo-auth-tabs" aria-label="Modo de autenticacao">
+        <button
+          aria-pressed={mode === "login"}
+          className={mode === "login" ? "is-active" : ""}
+          type="button"
+          onClick={() => setMode("login")}
+        >
+          Entrar
+        </button>
+        <button
+          aria-pressed={mode === "register"}
+          className={mode === "register" ? "is-active" : ""}
+          type="button"
+          onClick={() => setMode("register")}
+        >
+          Criar conta
+        </button>
+      </div>
+
+      <form className="linvo-auth-form" onSubmit={(event) => void submit(event)}>
+        {mode !== "reset" ? (
+          <label className="linvo-auth-field" htmlFor="auth-email">
+            <span>Email</span>
+            <span className="linvo-auth-input">
+              <MailIcon className="size-4" aria-hidden="true" />
+              <input
+                id="auth-email"
+                autoComplete="email"
+                placeholder="voce@empresa.com"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                required
+              />
+            </span>
+          </label>
+        ) : null}
+
+        {mode === "register" ? (
+          <label className="linvo-auth-field" htmlFor="auth-name">
+            <span>Nome</span>
+            <span className="linvo-auth-input">
+              <UserIcon className="size-4" aria-hidden="true" />
+              <input
+                id="auth-name"
+                autoComplete="name"
+                placeholder="Seu nome"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </span>
+          </label>
+        ) : null}
+
+        {mode === "reset" ? (
+          <label className="linvo-auth-field" htmlFor="auth-reset-code">
+            <span>Codigo</span>
+            <span className="linvo-auth-input">
+              <KeyRoundIcon className="size-4" aria-hidden="true" />
+              <input
+                id="auth-reset-code"
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                maxLength={6}
+                pattern="\d{6}"
+                placeholder="000000"
+                value={resetCode}
+                onChange={(event) => setResetCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                required
+              />
+            </span>
+          </label>
+        ) : null}
+
+        {mode !== "forgot" ? (
+          <label className="linvo-auth-field" htmlFor="auth-password">
+            <span>{mode === "reset" ? "Nova senha" : "Senha"}</span>
+            <span className="linvo-auth-input">
+              <LockKeyholeIcon className="size-4" aria-hidden="true" />
+              <input
+                id="auth-password"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                placeholder="Minimo de 8 caracteres"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                minLength={8}
+                type="password"
+                required
+              />
+            </span>
+          </label>
+        ) : null}
+
+        {notice ? (
+          <div className="linvo-auth-alert linvo-auth-alert-info" role="status" aria-live="polite">
+            {notice}
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="linvo-auth-alert linvo-auth-alert-error" role="alert">
+            {error}
+          </div>
+        ) : null}
+
+        <button className="linvo-auth-submit" disabled={pending} type="submit">
+          {pending ? "Aguarde..." : submitLabel(mode)}
+        </button>
+      </form>
+
+      <div className="linvo-auth-actions">
+        {mode === "login" ? (
+          <button type="button" onClick={() => setMode("forgot")}>
+            Esqueci minha senha
+          </button>
+        ) : (
+          <button type="button" onClick={() => setMode("login")}>
+            <ArrowLeftIcon className="size-4" aria-hidden="true" />
+            {mode === "register" ? "Ja tenho conta" : "Voltar para login"}
+          </button>
+        )}
+      </div>
+    </section>
   );
 }

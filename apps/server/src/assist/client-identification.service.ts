@@ -9,6 +9,9 @@ import {
   clientIdentificationDecisionResponseSchema,
   clientIdentificationSuccessResponseSchema,
   customerUpdateResponseSchema,
+  siteContextDeleteResponseSchema,
+  siteContextGetResponseSchema,
+  type AiClientIdentificationResult,
   type BulkClientIdentificationCandidate,
   type BulkClientIdentificationDecisionRequest,
   type BulkClientIdentificationDecisionResponse,
@@ -22,7 +25,9 @@ import {
   type ClientIdentificationSuccessResponse,
   type CustomerSummary,
   type CustomerUpdateRequest,
-  type CustomerUpdateResponse
+  type CustomerUpdateResponse,
+  type SiteAgentContextStatus,
+  type SiteAgentContextSummary
 } from "@linvo-ai/shared";
 
 import { AiClientService, type AiDuplicateValidationResult } from "../ai/ai-client.service";
@@ -34,6 +39,12 @@ import {
   CustomerRepository,
   IdentificationDecisionConflictError
 } from "./customer.repository";
+import { buildDomSignature } from "./identification-domain";
+import {
+  buildSiteContextDraft,
+  SiteContextRepository,
+  type SiteContextUpsertResult
+} from "./site-context.repository";
 
 function compact(value: string | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -101,7 +112,9 @@ export class ClientIdentificationService {
     private readonly aiClient: AiClientService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(CustomerRepository)
-    private readonly customerRepository: CustomerRepository
+    private readonly customerRepository: CustomerRepository,
+    @Inject(SiteContextRepository)
+    private readonly siteContextRepository: SiteContextRepository
   ) {}
 
   async openClientInfo(
@@ -110,6 +123,7 @@ export class ClientIdentificationService {
   ): Promise<ClientInfoOpenApiResponse> {
     const domain = new URL(request.url).hostname.toLowerCase();
     const customers = await this.customerRepository.listRecentCustomers(userId, domain);
+    const siteContext = await this.siteContextRepository.getByDomain(userId, domain);
 
     if (customers.length === 0) {
       return clientInfoOpenNoMatchResponseSchema.parse({
@@ -123,7 +137,8 @@ export class ClientIdentificationService {
 
     const aiSelection = await this.aiClient.selectClientInfo({
       customers,
-      request
+      request,
+      ...(siteContext ? { siteContext } : {})
     });
 
     if (aiSelection?.status === "no_match") {
@@ -190,13 +205,18 @@ export class ClientIdentificationService {
     request: ClientIdentificationRequest
   ): Promise<ClientIdentificationSuccessResponse> {
     const startedAt = Date.now();
-    const domain = new URL(request.url).hostname;
-    const analysisResult = await this.aiClient.analyzeClientIdentification(request);
+    const domain = new URL(request.url).hostname.toLowerCase();
+    const existingSiteContext = await this.siteContextRepository.getByDomain(userId, domain);
+    const baseContextState = this.toSiteContextState(existingSiteContext);
+    const analysisResult = existingSiteContext
+      ? await this.aiClient.analyzeClientIdentification(request, existingSiteContext)
+      : await this.aiClient.analyzeClientIdentification(request);
     const recentCustomers = await this.customerRepository.listRecentCustomers(userId, domain);
     const duplicateValidation = await this.aiClient.validateClientDuplicate({
       analysisResult,
       candidates: recentCustomers,
-      request
+      request,
+      ...(existingSiteContext ? { siteContext: existingSiteContext } : {})
     });
     const aiMatchedCustomer = this.customerFromDuplicateValidation(
       duplicateValidation,
@@ -219,7 +239,8 @@ export class ClientIdentificationService {
       analysisResult,
       duplicateValidation: enrichedDuplicateValidation,
       matchedCustomer,
-      request
+      request,
+      ...(existingSiteContext ? { siteContext: existingSiteContext } : {})
     });
     const confident = aiResult.confidence >= this.config.IDENTIFICATION_CONFIDENCE_MIN;
     const finalResult = confident
@@ -263,6 +284,8 @@ export class ClientIdentificationService {
         requestId: request.requestId,
         saveState: "low_confidence",
         saved: false,
+        siteContext: baseContextState.siteContext,
+        siteContextStatus: baseContextState.siteContextStatus,
         status: "ok",
         warnings: finalResult.warnings
       });
@@ -280,6 +303,12 @@ export class ClientIdentificationService {
           userId
         });
       const updatedRecentCustomers = await this.customerRepository.listRecentCustomers(userId, domain);
+      const contextState = await this.upsertSiteContextForConfirmed({
+        aiResult: finalResult,
+        domain,
+        request,
+        userId
+      });
 
       return clientIdentificationSuccessResponseSchema.parse({
         activeClient: customerSummary ?? matchedCustomer,
@@ -292,6 +321,8 @@ export class ClientIdentificationService {
         requestId: request.requestId,
         saveState: "known",
         saved: true,
+        siteContext: contextState.siteContext,
+        siteContextStatus: contextState.siteContextStatus,
         status: "ok",
         warnings: finalResult.warnings
       });
@@ -317,6 +348,8 @@ export class ClientIdentificationService {
       requestId: request.requestId,
       saveState: "pending_confirmation",
       saved: false,
+      siteContext: baseContextState.siteContext,
+      siteContextStatus: baseContextState.siteContextStatus,
       status: "ok",
       warnings: finalResult.warnings
     });
@@ -342,6 +375,11 @@ export class ClientIdentificationService {
       userId,
       decision.domain
     );
+    const contextState = decision.saved
+      ? await this.upsertSiteContextFromRun(userId, request.requestId, decision.domain)
+      : this.toSiteContextState(
+          await this.siteContextRepository.getByDomain(userId, decision.domain)
+        );
 
     return clientIdentificationDecisionResponseSchema.parse({
       activeClient: decision.activeClient,
@@ -350,6 +388,8 @@ export class ClientIdentificationService {
       recentCustomers,
       requestId: request.requestId,
       saved: decision.saved,
+      siteContext: contextState.siteContext,
+      siteContextStatus: contextState.siteContextStatus,
       status: "ok"
     });
   }
@@ -523,6 +563,29 @@ export class ClientIdentificationService {
     };
   }
 
+  async getSiteContext(userId: string, domain: string) {
+    const normalizedDomain = domain.trim().toLowerCase();
+
+    return siteContextGetResponseSchema.parse({
+      domain: normalizedDomain,
+      siteContext: await this.siteContextRepository.getByDomain(userId, normalizedDomain),
+      status: "ok"
+    });
+  }
+
+  async deleteSiteContext(userId: string, domain: string) {
+    const normalizedDomain = domain.trim().toLowerCase();
+
+    return siteContextDeleteResponseSchema.parse({
+      deleted: await this.siteContextRepository.deleteByDomain({
+        domain: normalizedDomain,
+        userId
+      }),
+      domain: normalizedDomain,
+      status: "ok"
+    });
+  }
+
   async updateCustomer(
     userId: string,
     request: CustomerUpdateRequest
@@ -629,6 +692,88 @@ export class ClientIdentificationService {
         "Cliente existente encontrado por identidade canonica no banco."
       ],
       status: "match"
+    };
+  }
+
+  private toSiteContextState(siteContext: SiteAgentContextSummary | null): {
+    siteContext: SiteAgentContextSummary | null;
+    siteContextStatus: SiteAgentContextStatus;
+  } {
+    return {
+      siteContext,
+      siteContextStatus: siteContext ? "existing" : "missing"
+    };
+  }
+
+  private async upsertSiteContextForConfirmed(input: {
+    aiResult: AiClientIdentificationResult;
+    domain: string;
+    request: ClientIdentificationRequest;
+    userId: string;
+  }): Promise<{
+    siteContext: SiteAgentContextSummary | null;
+    siteContextStatus: SiteAgentContextStatus;
+  }> {
+    try {
+      const fallbackDraft = buildSiteContextDraft({
+        aiResult: input.aiResult,
+        domain: input.domain,
+        domSignature: buildDomSignature(input.request, input.aiResult),
+        pageTitle: input.request.pageTitle,
+        selectedText: input.request.selectedText,
+        ...(input.request.surroundingText
+          ? { surroundingText: input.request.surroundingText }
+          : {})
+      });
+      const aiDraft = await this.aiClient.generateSiteContextDraft({
+        analysisResult: input.aiResult,
+        fallbackDraft,
+        request: input.request
+      });
+      const result = await this.siteContextRepository.upsertDraft({
+        domain: input.domain,
+        draft: aiDraft,
+        sourceRequestId: input.request.requestId,
+        userId: input.userId
+      });
+
+      return this.fromUpsertResult(result);
+    } catch {
+      return {
+        siteContext: await this.siteContextRepository.getByDomain(input.userId, input.domain),
+        siteContextStatus: "unavailable"
+      };
+    }
+  }
+
+  private async upsertSiteContextFromRun(
+    userId: string,
+    requestId: string,
+    domain: string
+  ): Promise<{
+    siteContext: SiteAgentContextSummary | null;
+    siteContextStatus: SiteAgentContextStatus;
+  }> {
+    try {
+      return this.fromUpsertResult(await this.siteContextRepository.upsertFromRun({
+        requestId,
+        userId
+      }));
+    } catch {
+      return {
+        siteContext: await this.siteContextRepository.getByDomain(userId, domain),
+        siteContextStatus: "unavailable"
+      };
+    }
+  }
+
+  private fromUpsertResult(result: SiteContextUpsertResult): {
+    siteContext: SiteAgentContextSummary | null;
+    siteContextStatus: SiteAgentContextStatus;
+  } {
+    return {
+      siteContext: result.siteContext,
+      siteContextStatus: result.status
     };
   }
 

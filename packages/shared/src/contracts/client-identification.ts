@@ -19,6 +19,10 @@ import {
 } from "../limits";
 import { customerCaseSummarySchema, customerSummarySchema } from "./customer";
 import { apiErrorResponseSchema } from "./errors";
+import {
+  siteAgentContextStatusSchema,
+  siteAgentContextSummarySchema
+} from "./site-context";
 
 const imageDataUrlSchema = z
   .string()
@@ -193,6 +197,8 @@ export const clientIdentificationSuccessResponseSchema = z.object({
   requestId: z.string().trim().min(1).max(MAX_REQUEST_ID_CHARS),
   saveState: clientIdentificationSaveStateSchema,
   saved: z.boolean(),
+  siteContext: siteAgentContextSummarySchema.nullable().default(null),
+  siteContextStatus: siteAgentContextStatusSchema.default("missing"),
   status: z.literal("ok"),
   warnings: z.array(z.string().trim().min(1).max(MAX_WARNING_CHARS)).default([])
 });
@@ -209,6 +215,8 @@ export const clientIdentificationDecisionResponseSchema = z.object({
   recentCustomers: z.array(customerSummarySchema).default([]),
   requestId: z.string().trim().min(1).max(MAX_REQUEST_ID_CHARS),
   saved: z.boolean(),
+  siteContext: siteAgentContextSummarySchema.nullable().default(null),
+  siteContextStatus: siteAgentContextStatusSchema.default("missing"),
   status: z.literal("ok")
 });
 

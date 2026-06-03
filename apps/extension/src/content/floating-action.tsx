@@ -4,10 +4,6 @@ import {
   buildBulkIdentificationRequest,
   buildIdentificationRequest
 } from "./context-capture";
-import {
-  installClientAnchorMenu,
-  syncClientAnchorMenu
-} from "./client-anchor-menu";
 import { startClientPicker, startListPicker } from "./client-picker";
 import { FloatingActionView } from "./floating-action-view";
 import { createShadowReactMount } from "./shadow-ui";
@@ -72,6 +68,14 @@ export const DEFAULT_FLOATING_ACTION_PLACEMENT: FloatingActionPlacement = {
   snap: "corner",
   vertical: "bottom"
 };
+
+function getRuntimeOwnerId(): string {
+  if (typeof chrome === "undefined") {
+    return "local-preview";
+  }
+
+  return chrome.runtime?.id ?? "local-preview";
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -320,9 +324,14 @@ export function resolveFloatingActionMagnetPreview(
 }
 
 export function installFloatingAction(): void {
-  if (document.getElementById(BUTTON_ID)) {
+  const runtimeOwnerId = getRuntimeOwnerId();
+  const existingRoot = document.getElementById(BUTTON_ID);
+
+  if (existingRoot?.dataset.linvoExtensionId === runtimeOwnerId) {
     return;
   }
+
+  existingRoot?.remove();
 
   let currentPlacement = DEFAULT_FLOATING_ACTION_PLACEMENT;
   let dragCandidatePlacement: FloatingActionPlacement | null = null;
@@ -340,6 +349,7 @@ export function installFloatingAction(): void {
 
   const mount = createShadowReactMount(BUTTON_ID);
   const root = mount.host;
+  root.dataset.linvoExtensionId = runtimeOwnerId;
   root.style.position = "fixed";
   root.style.left = `${DEFAULT_MARGIN}px`;
   root.style.top = `${DEFAULT_MARGIN}px`;
@@ -347,18 +357,13 @@ export function installFloatingAction(): void {
   root.style.height = `${LAUNCHER_SIZE}px`;
   root.style.zIndex = "2147483645";
   root.style.transition = "left 180ms ease, top 180ms ease, transform 120ms ease";
-  installClientAnchorMenu({
-    onIdentifyClient: () => void runIdentificationFlow(),
-    onIdentifyList: () => void runBulkIdentificationFlow(),
-    onOpenInfo: () => void runOpenInfoFlow()
-  });
-
   const render = () => {
     mount.render(
       <FloatingActionView
         alignRight={alignRight}
         menuOpen={menuOpen}
         openUp={openUp}
+        tooltipPortalContainer={mount.portalRoot}
         onClient={() => {
           setMenuOpen(false);
           void runIdentificationFlow();
@@ -581,7 +586,7 @@ function installFloatingActionLegacy(): void {
   root.style.width = `${LAUNCHER_SIZE}px`;
   root.style.height = `${LAUNCHER_SIZE}px`;
   root.style.zIndex = "2147483645";
-  root.style.fontFamily = "Inter, system-ui, sans-serif";
+  root.style.fontFamily = "Merriweather, Georgia, serif";
   root.style.transition = "left 180ms ease, top 180ms ease, transform 120ms ease";
 
   const launcherButton = createLauncherButton();
@@ -789,6 +794,7 @@ function installFloatingActionLegacy(): void {
     menu.style.display = open ? "grid" : "none";
     menu.style.opacity = open ? "1" : "0";
     menu.style.pointerEvents = open ? "auto" : "none";
+    menu.style.transform = open ? "translateY(0) scale(1)" : "translateY(4px) scale(0.94)";
     syncMenuAttachment();
   }
 
@@ -815,12 +821,12 @@ function createLauncherButton(): HTMLButtonElement {
   button.innerHTML = createIconMarkup("launcher");
   button.style.alignItems = "center";
   button.style.background =
-    "linear-gradient(135deg, #0f172a 0%, #111827 46%, #0f766e 100%)";
-  button.style.border = "1px solid rgba(248, 250, 252, 0.16)";
+    "radial-gradient(circle at 32% 24%, rgba(255,255,255,0.2), transparent 28%), linear-gradient(145deg, #1f1f23 0%, #09090b 46%, #be123c 100%)";
+  button.style.border = "1px solid rgba(255, 255, 255, 0.16)";
   button.style.borderRadius = "999px";
   button.style.boxShadow =
-    "0 18px 42px rgba(15, 23, 42, 0.34), 0 0 0 4px rgba(20, 184, 166, 0.12)";
-  button.style.color = "#f8fafc";
+    "0 16px 34px rgba(0, 0, 0, 0.46), 0 0 0 5px rgba(225, 29, 72, 0.22), inset 0 1px 0 rgba(255,255,255,0.18)";
+  button.style.color = "#ffffff";
   button.style.cursor = "grab";
   button.style.display = "inline-flex";
   button.style.height = `${LAUNCHER_SIZE}px`;
@@ -828,16 +834,20 @@ function createLauncherButton(): HTMLButtonElement {
   button.style.padding = "0";
   button.style.touchAction = "none";
   button.style.transition =
-    "box-shadow 160ms ease, transform 160ms ease, background 160ms ease";
+    "border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease";
   button.style.width = `${LAUNCHER_SIZE}px`;
 
   button.addEventListener("pointerenter", () => {
+    button.style.borderColor = "rgba(225, 29, 72, 0.62)";
     button.style.boxShadow =
-      "0 20px 48px rgba(15, 23, 42, 0.38), 0 0 0 5px rgba(20, 184, 166, 0.16)";
+      "0 18px 40px rgba(0, 0, 0, 0.5), 0 0 0 6px rgba(225, 29, 72, 0.22), 0 0 28px rgba(225, 29, 72, 0.45), inset 0 1px 0 rgba(255,255,255,0.22)";
+    button.style.transform = "translateY(-1px) scale(1.02)";
   });
   button.addEventListener("pointerleave", () => {
+    button.style.borderColor = "rgba(255, 255, 255, 0.16)";
     button.style.boxShadow =
-      "0 18px 42px rgba(15, 23, 42, 0.34), 0 0 0 4px rgba(20, 184, 166, 0.12)";
+      "0 16px 34px rgba(0, 0, 0, 0.46), 0 0 0 5px rgba(225, 29, 72, 0.22), inset 0 1px 0 rgba(255,255,255,0.18)";
+    button.style.transform = "translateY(0) scale(1)";
   });
 
   return button;
@@ -847,17 +857,18 @@ function createActionMenu(): HTMLDivElement {
   const menu = document.createElement("div");
   menu.setAttribute("aria-label", "Acoes de identificacao");
   menu.setAttribute("role", "menu");
-  menu.style.background = "rgba(15, 23, 42, 0.94)";
-  menu.style.border = "1px solid rgba(248, 250, 252, 0.14)";
+  menu.style.background = "rgba(9, 9, 11, 0.9)";
+  menu.style.border = "1px solid rgba(255, 255, 255, 0.1)";
   menu.style.borderRadius = "999px";
-  menu.style.boxShadow = "0 16px 40px rgba(15, 23, 42, 0.28)";
+  menu.style.boxShadow = "0 18px 42px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255,255,255,0.08)";
   menu.style.display = "none";
   menu.style.gap = "6px";
   menu.style.gridAutoFlow = "column";
   menu.style.padding = "6px";
   menu.style.pointerEvents = "none";
   menu.style.position = "absolute";
-  menu.style.transition = "opacity 140ms ease";
+  menu.style.transition = "opacity 180ms ease, transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1)";
+  menu.style.transform = "translateY(4px) scale(0.94)";
 
   return menu;
 }
@@ -875,35 +886,44 @@ function createMenuActionButton(
   button.innerHTML = createIconMarkup(icon);
   const variant = {
     client: {
-      background: "rgba(20, 184, 166, 0.18)",
-      border: "1px solid rgba(94, 234, 212, 0.3)"
+      background: "rgba(225, 29, 72, 0.18)",
+      border: "1px solid rgba(225, 29, 72, 0.46)",
+      color: "#fda4af"
     },
     info: {
-      background: "rgba(59, 130, 246, 0.2)",
-      border: "1px solid rgba(147, 197, 253, 0.34)"
+      background: "#27272a",
+      border: "1px solid rgba(255, 255, 255, 0.1)",
+      color: "#a1a1aa"
     },
     list: {
-      background: "rgba(249, 115, 22, 0.2)",
-      border: "1px solid rgba(251, 146, 60, 0.3)"
+      background: "#27272a",
+      border: "1px solid rgba(255, 255, 255, 0.1)",
+      color: "#a1a1aa"
     }
   }[icon];
   button.style.alignItems = "center";
   button.style.background = variant.background;
   button.style.border = variant.border;
   button.style.borderRadius = "999px";
-  button.style.color = "#f8fafc";
+  button.style.color = variant.color;
   button.style.cursor = "pointer";
   button.style.display = "inline-flex";
   button.style.height = "42px";
   button.style.justifyContent = "center";
   button.style.padding = "0";
-  button.style.transition = "transform 120ms ease, background 120ms ease";
+  button.style.transition = "border-color 120ms ease, color 120ms ease, transform 120ms ease, background 120ms ease";
   button.style.width = "42px";
 
   button.addEventListener("pointerenter", () => {
+    button.style.background = "rgba(225, 29, 72, 0.14)";
+    button.style.borderColor = "rgba(225, 29, 72, 0.54)";
+    button.style.color = "#f4f4f5";
     button.style.transform = "translateY(-1px)";
   });
   button.addEventListener("pointerleave", () => {
+    button.style.background = variant.background;
+    button.style.border = variant.border;
+    button.style.color = variant.color;
     button.style.transform = "translateY(0)";
   });
 
@@ -995,7 +1015,7 @@ async function runIdentificationFlow(): Promise<void> {
     return;
   }
 
-  showToast("Identificando cliente...");
+  showToast("Analisando cliente na pagina...");
   const request = buildIdentificationRequest(picked.element, picked.selection);
 
   try {
@@ -1015,18 +1035,14 @@ async function runIdentificationFlow(): Promise<void> {
       "saved" in response.response &&
       "confidence" in response.response
     ) {
-      const identificationResponse = response.response;
-
-      void syncClientAnchorMenu(identificationResponse);
-
-      if (identificationResponse.saveState === "pending_confirmation") {
+      if (response.response.saveState === "pending_confirmation") {
         showToast("Revise no Linvo AI para adicionar.", "info");
         return;
       }
 
       showToast(
-        identificationResponse.saved ? "Cliente identificado." : "Cliente nao confirmado.",
-        identificationResponse.saved ? "success" : "info"
+        response.response.saved ? "Cliente identificado." : "Cliente nao confirmado.",
+        response.response.saved ? "success" : "info"
       );
       return;
     }
@@ -1085,7 +1101,7 @@ async function runBulkIdentificationFlow(): Promise<void> {
     return;
   }
 
-  showToast(`Identificando ${picked.items.length} clientes...`);
+  showToast(`Analisando ${picked.items.length} clientes da lista...`);
   const request = buildBulkIdentificationRequest(picked.selection, picked.items);
 
   try {

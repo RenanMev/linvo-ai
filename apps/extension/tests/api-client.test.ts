@@ -106,6 +106,26 @@ describe("api-client error handling", () => {
     });
   });
 
+  it("throws assist auth errors so protected requests can refresh tokens", async () => {
+    mockFetchResponse({
+      body: {
+        errorCode: "AUTH_REQUIRED",
+        message: "Entre novamente para continuar.",
+        status: "error"
+      },
+      ok: false,
+      status: 401
+    });
+
+    await expect(identifyClient("expired-access-token", identificationRequest))
+      .rejects
+      .toMatchObject({
+        errorCode: "AUTH_REQUIRED",
+        message: "Entre novamente para continuar.",
+        statusCode: 401
+      } satisfies Partial<ApiClientError>);
+  });
+
   it("requests password reset and returns the dev code when available", async () => {
     mockFetchResponse({
       body: {

@@ -1,5 +1,6 @@
 import { FileSearchIcon, InfoIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +19,10 @@ interface FloatingActionViewProps {
   onLauncherPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onList: () => void;
   openUp: boolean;
+  tooltipPortalContainer?: ComponentProps<typeof TooltipContent>["portalContainer"];
 }
+
+type FloatingTooltipSide = NonNullable<ComponentProps<typeof TooltipContent>["side"]>;
 
 export function FloatingActionView({
   alignRight,
@@ -28,47 +32,76 @@ export function FloatingActionView({
   onLauncherClick,
   onLauncherPointerDown,
   onList,
-  openUp
+  openUp,
+  tooltipPortalContainer
 }: FloatingActionViewProps) {
+  const launcherTooltipSide: FloatingTooltipSide = alignRight ? "left" : "right";
+  const actionTooltipSide: FloatingTooltipSide = openUp ? "top" : "bottom";
+
   return (
     <TooltipProvider>
-      <div className="relative size-[52px] font-sans">
+      <div className="linvo-floating-root relative size-[52px] font-sans">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               aria-expanded={menuOpen}
               aria-haspopup="menu"
               aria-label="Abrir acoes Linvo AI"
-              className="linvo-gradient linvo-shadow size-[52px] rounded-full border-white/20 text-white hover:scale-[1.02] hover:bg-teal-700"
+              className="linvo-floating-launcher size-[52px]"
               data-linvo-role="launcher"
-              title="Linvo AI"
+              size="icon"
               type="button"
-              variant="linvo"
+              variant="ghost"
               onClick={onLauncherClick}
               onPointerDown={onLauncherPointerDown}
             >
               <SparklesIcon className="size-6" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="left">Linvo AI</TooltipContent>
+          <TooltipContent
+            className="linvo-floating-tooltip"
+            portalContainer={tooltipPortalContainer}
+            side={launcherTooltipSide}
+            sideOffset={10}
+          >
+            Linvo AI
+          </TooltipContent>
         </Tooltip>
         <div
           aria-label="Acoes de identificacao"
           className={[
-            "absolute z-10 grid grid-flow-col gap-1 rounded-full border border-white/15 bg-slate-950/95 p-1.5 shadow-2xl transition-opacity",
+            "linvo-floating-menu absolute z-10 transition-opacity",
             menuOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
             alignRight ? "right-0" : "left-0",
             openUp ? "bottom-[calc(100%+10px)]" : "top-[calc(100%+10px)]"
           ].join(" ")}
           role="menu"
         >
-          <OverlayAction label="Identificar cliente" tone="teal" onClick={onClient}>
+          <OverlayAction
+            action="client"
+            label="Identificar cliente"
+            tooltipPortalContainer={tooltipPortalContainer}
+            tooltipSide={actionTooltipSide}
+            onClick={onClient}
+          >
             <UserRoundIcon className="size-5" />
           </OverlayAction>
-          <OverlayAction label="Identificar lista" tone="amber" onClick={onList}>
+          <OverlayAction
+            action="list"
+            label="Identificar lista"
+            tooltipPortalContainer={tooltipPortalContainer}
+            tooltipSide={actionTooltipSide}
+            onClick={onList}
+          >
             <FileSearchIcon className="size-5" />
           </OverlayAction>
-          <OverlayAction label="Abrir info" tone="blue" onClick={onInfo}>
+          <OverlayAction
+            action="info"
+            label="Abrir info"
+            tooltipPortalContainer={tooltipPortalContainer}
+            tooltipSide={actionTooltipSide}
+            onClick={onInfo}
+          >
             <InfoIcon className="size-5" />
           </OverlayAction>
         </div>
@@ -78,32 +111,29 @@ export function FloatingActionView({
 }
 
 function OverlayAction({
+  action,
   children,
   label,
-  onClick,
-  tone
+  tooltipPortalContainer,
+  tooltipSide,
+  onClick
 }: {
+  action: "client" | "info" | "list";
   children: ReactNode;
   label: string;
+  tooltipPortalContainer?: ComponentProps<typeof TooltipContent>["portalContainer"];
+  tooltipSide: FloatingTooltipSide;
   onClick: () => void;
-  tone: "amber" | "blue" | "teal";
 }) {
-  const toneClass = {
-    amber: "border-orange-300/30 bg-orange-500/20 hover:bg-orange-500/30",
-    blue: "border-blue-300/30 bg-blue-500/20 hover:bg-blue-500/30",
-    teal: "border-teal-300/30 bg-teal-500/20 hover:bg-teal-500/30"
-  }[tone];
-
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
           aria-label={label}
-          className={`size-10 rounded-full text-white ${toneClass}`}
-          data-linvo-action={tone === "teal" ? "client" : tone === "amber" ? "list" : "info"}
+          className="linvo-floating-action size-10"
+          data-linvo-action={action}
           role="menuitem"
           size="icon"
-          title={label}
           type="button"
           variant="ghost"
           onClick={(event) => {
@@ -116,7 +146,14 @@ function OverlayAction({
           <span className="sr-only">{label}</span>
         </Button>
       </TooltipTrigger>
-      <TooltipContent side="top">{label}</TooltipContent>
+      <TooltipContent
+        className="linvo-floating-tooltip"
+        portalContainer={tooltipPortalContainer}
+        side={tooltipSide}
+        sideOffset={8}
+      >
+        {label}
+      </TooltipContent>
     </Tooltip>
   );
 }

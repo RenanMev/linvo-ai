@@ -35,6 +35,17 @@ function errorResponse(error: unknown): RuntimeResponseMessage {
   };
 }
 
+function isSessionInvalidError(error: unknown): boolean {
+  return isApiClientError(error) &&
+    (error.errorCode === "AUTH_REQUIRED" || error.errorCode === "REFRESH_TOKEN_INVALID");
+}
+
+async function clearAuthSessionForSessionInvalid(error: unknown): Promise<void> {
+  if (isSessionInvalidError(error)) {
+    await clearAuthSession();
+  }
+}
+
 export function handleAuthMessage(
   message: RuntimeRequestMessage,
   sendResponse: (response: RuntimeResponseMessage) => void
@@ -73,10 +84,13 @@ export function handleAuthMessage(
 
       if (message.type === "auth/logout") {
         const session = await getAuthSession();
-        if (session) {
-          await logout(session.tokens.refreshToken);
+        try {
+          if (session) {
+            await logout(session.tokens.refreshToken);
+          }
+        } finally {
+          await clearAuthSession();
         }
-        await clearAuthSession();
         sendResponse({ ok: true });
         return;
       }
@@ -91,14 +105,18 @@ export function handleAuthMessage(
         try {
           const user = await me(session.tokens.accessToken);
           sendResponse({ ok: true, user });
-        } catch {
+        } catch (error) {
+          if (!isSessionInvalidError(error)) {
+            throw error;
+          }
+
           const tokens = await refresh(session.tokens.refreshToken);
           await setAuthSession({ tokens, user: session.user });
           sendResponse({ ok: true, user: session.user });
         }
       }
     } catch (error) {
-      await clearAuthSession();
+      await clearAuthSessionForSessionInvalid(error);
       sendResponse(errorResponse(error));
     }
   })();

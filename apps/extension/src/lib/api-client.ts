@@ -14,6 +14,8 @@ import {
   customerDeleteApiResponseSchema,
   customerUpdateApiResponseSchema,
   customersListResponseSchema,
+  siteContextDeleteApiResponseSchema,
+  siteContextGetApiResponseSchema,
   type ApiErrorCode,
   type AuthLoginRequest,
   type AuthPasswordResetConfirmRequest,
@@ -37,7 +39,10 @@ import {
   type CustomerDeleteRequest,
   type CustomerUpdateApiResponse,
   type CustomerUpdateRequest,
-  type CustomersListResponse
+  type CustomersListResponse,
+  type SiteContextDeleteApiResponse,
+  type SiteContextDeleteRequest,
+  type SiteContextGetApiResponse
 } from "@linvo-ai/shared";
 
 const BACKEND_URL_KEY = "linvo-ai.backend-url";
@@ -65,6 +70,10 @@ export class ApiClientError extends Error {
 
 export function isApiClientError(error: unknown): error is ApiClientError {
   return error instanceof ApiClientError;
+}
+
+function isAuthErrorCode(errorCode: ApiErrorCode): boolean {
+  return errorCode === "AUTH_REQUIRED" || errorCode === "REFRESH_TOKEN_INVALID";
 }
 
 export async function getBackendUrl(): Promise<string> {
@@ -158,13 +167,17 @@ async function getJson(baseUrl: string, path: string, token?: string): Promise<J
 function parseSchema<T>(
   schema: Schema<T>,
   response: JsonHttpResponse,
-  options: { throwApiError?: boolean } = {}
+  options: { throwApiError?: boolean; throwAuthError?: boolean } = {}
 ): T {
-  const apiError = options.throwApiError === false
-    ? null
-    : apiErrorFromBody(response.body, response.status);
+  const apiError = apiErrorFromBody(response.body, response.status);
 
-  if (apiError) {
+  if (
+    apiError &&
+    (
+      options.throwApiError !== false ||
+      (options.throwAuthError !== false && isAuthErrorCode(apiError.errorCode))
+    )
+  ) {
     throw apiError;
   }
 
@@ -335,6 +348,32 @@ export async function listCustomers(
       `/assist/customers${query}`,
       accessToken
     )
+  );
+}
+
+export async function getSiteContext(
+  accessToken: string,
+  domain: string
+): Promise<SiteContextGetApiResponse> {
+  return parseSchema(
+    siteContextGetApiResponseSchema,
+    await getJson(
+      await getBackendUrl(),
+      `/assist/site-context?domain=${encodeURIComponent(domain)}`,
+      accessToken
+    ),
+    { throwApiError: false }
+  );
+}
+
+export async function deleteSiteContext(
+  accessToken: string,
+  request: SiteContextDeleteRequest
+): Promise<SiteContextDeleteApiResponse> {
+  return parseSchema(
+    siteContextDeleteApiResponseSchema,
+    await postJson(await getBackendUrl(), "/assist/site-context/delete", request, accessToken),
+    { throwApiError: false }
   );
 }
 

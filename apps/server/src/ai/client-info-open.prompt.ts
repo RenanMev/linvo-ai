@@ -1,7 +1,8 @@
 import {
   redactSensitiveText,
   type ClientInfoOpenRequest,
-  type CustomerSummary
+  type CustomerSummary,
+  type SiteAgentContextSummary
 } from "@linvo-ai/shared";
 
 function compact(value: string | undefined, maxChars: number): string {
@@ -36,14 +37,33 @@ function customerLine(customer: CustomerSummary): string {
   ].filter(Boolean).join("; ");
 }
 
+function siteContextBlock(siteContext: SiteAgentContextSummary | null | undefined): string {
+  if (!siteContext) {
+    return "Nenhum contexto operacional salvo para este dominio.";
+  }
+
+  return JSON.stringify({
+    focusRules: siteContext.focusRules,
+    ignoreRules: siteContext.ignoreRules,
+    regions: siteContext.regions.map((region) => ({
+      description: region.description,
+      kind: region.kind,
+      ...(region.label ? { label: region.label } : {})
+    })),
+    summary: siteContext.summary
+  }, null, 2);
+}
+
 export function buildClientInfoOpenUserPrompt(input: {
   customers: CustomerSummary[];
   request: ClientInfoOpenRequest;
+  siteContext?: SiteAgentContextSummary | null;
 }): string {
   return [
     "Voce precisa identificar em qual usuario abrir o menu correto, seguindo a lista de usuarios que ja foram identificados.",
     `Titulo da pagina: ${input.request.pageTitle}`,
     `URL da pagina: ${input.request.url}`,
+    `Contexto operacional salvo:\n${siteContextBlock(input.siteContext)}`,
     `Texto visivel da pagina:\n${compact(input.request.pageText, 5_500)}`,
     `Usuarios ja identificados:\n${input.customers.map(customerLine).join("\n")}`,
     "Retorne somente JSON. Use um customerId exatamente igual a um usuario da lista."
