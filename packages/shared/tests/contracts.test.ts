@@ -11,8 +11,15 @@ import {
   clientInfoOpenRequestSchema,
   clientIdentificationRequestSchema,
   clientIdentificationSuccessResponseSchema,
+  customerChatClearResponseSchema,
+  customerChatStreamCompleteEventSchema,
+  customerChatStreamDeltaEventSchema,
+  customerChatStreamRequestSchema,
+  customerChatStreamStartEventSchema,
+  customerChatThreadResponseSchema,
   customerDeleteRequestSchema,
   customerDeleteResponseSchema,
+  customerDetailResponseSchema,
   customerUpdateRequestSchema,
   customerUpdateResponseSchema,
   customersListResponseSchema,
@@ -147,7 +154,9 @@ describe("shared contracts", () => {
       cases: [],
       displayName: "Renan Devs",
       domain: "painel.nvoip.com.br",
+      favoriteFields: ["protocol", "phone"],
       id: "11111111-1111-4111-8111-111111111111",
+      isStarred: true,
       lastSeenAt: "2026-06-01T12:00:00.000Z",
       maskedIdentifiers: { protocol: "10703030" }
     };
@@ -286,6 +295,13 @@ describe("shared contracts", () => {
     ).toBe(true);
 
     expect(
+      customerDetailResponseSchema.safeParse({
+        customer,
+        status: "ok"
+      }).success
+    ).toBe(true);
+
+    expect(
       customerUpdateRequestSchema.safeParse({
         customerId: customer.id,
         case: {
@@ -295,6 +311,8 @@ describe("shared contracts", () => {
           subject: "Suporte tecnico"
         },
         displayName: "Renan Devs Atualizado",
+        favoriteFields: ["protocol", "caseStatus"],
+        isStarred: false,
         maskedIdentifiers: {
           document: "***.***.***-11",
           email: "re***@example.com",
@@ -310,6 +328,50 @@ describe("shared contracts", () => {
         customer,
         customers: [customer],
         domain: "painel.nvoip.com.br",
+        status: "ok"
+      }).success
+    ).toBe(true);
+  });
+
+  it("validates customer chat payloads and stream events", () => {
+    const message = {
+      content: "O cliente prefere WhatsApp.",
+      createdAt: "2026-06-03T12:00:00.000Z",
+      id: "33333333-3333-4333-8333-333333333333",
+      role: "assistant",
+      sequence: 2,
+      status: "completed"
+    };
+
+    expect(
+      customerChatThreadResponseSchema.safeParse({
+        customerId: "11111111-1111-4111-8111-111111111111",
+        messages: [message],
+        status: "ok",
+        summary: "Cliente prefere WhatsApp."
+      }).success
+    ).toBe(true);
+    expect(
+      customerChatStreamRequestSchema.parse({
+        message: "O que lembrar deste cliente?"
+      }).message
+    ).toBe("O que lembrar deste cliente?");
+    expect(
+      customerChatStreamStartEventSchema.safeParse({
+        messageId: "33333333-3333-4333-8333-333333333333"
+      }).success
+    ).toBe(true);
+    expect(customerChatStreamDeltaEventSchema.parse({ text: "Oi" }).text).toBe("Oi");
+    expect(
+      customerChatStreamCompleteEventSchema.safeParse({
+        message,
+        summary: "Cliente prefere WhatsApp."
+      }).success
+    ).toBe(true);
+    expect(
+      customerChatClearResponseSchema.safeParse({
+        customerId: "11111111-1111-4111-8111-111111111111",
+        deletedMessages: 2,
         status: "ok"
       }).success
     ).toBe(true);

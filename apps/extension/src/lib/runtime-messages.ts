@@ -16,8 +16,11 @@ import type {
   ClientIdentificationDecisionRequest,
   ClientIdentificationApiResponse,
   ClientIdentificationRequest,
+  CustomerChatClearApiResponse,
+  CustomerChatThreadApiResponse,
   CustomerDeleteApiResponse,
   CustomerDeleteRequest,
+  CustomerDetailApiResponse,
   CustomerUpdateApiResponse,
   CustomerUpdateRequest,
   CustomersListResponse,
@@ -42,6 +45,9 @@ export type RuntimeRequestMessage =
   | { type: "assist/client-identification.decision"; request: ClientIdentificationDecisionRequest }
   | { type: "assist/client-identification.bulk.request"; request: BulkClientIdentificationRequest }
   | { type: "assist/client-identification.bulk.decision"; request: BulkClientIdentificationDecisionRequest }
+  | { type: "assist/customer.get"; customerId: string }
+  | { type: "assist/customer-chat.clear"; customerId: string }
+  | { type: "assist/customer-chat.get"; customerId: string }
   | { type: "assist/customer.delete"; request: CustomerDeleteRequest }
   | { type: "assist/customer.update"; request: CustomerUpdateRequest }
   | { type: "assist/customers.list"; domain?: string }
@@ -57,7 +63,10 @@ export type RuntimeResponseMessage =
   | { ok: true; response: ClientIdentificationDecisionApiResponse }
   | { ok: true; response: BulkClientIdentificationApiResponse }
   | { ok: true; response: BulkClientIdentificationDecisionApiResponse }
+  | { ok: true; response: CustomerChatClearApiResponse }
+  | { ok: true; response: CustomerChatThreadApiResponse }
   | { ok: true; response: CustomerDeleteApiResponse }
+  | { ok: true; response: CustomerDetailApiResponse }
   | { ok: true; response: CustomerUpdateApiResponse }
   | { ok: true; response: CustomersListResponse }
   | { ok: true; response: SiteContextGetApiResponse }

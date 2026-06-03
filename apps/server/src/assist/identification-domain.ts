@@ -7,11 +7,13 @@ import {
   maskDocument,
   maskEmail,
   maskPhone,
+  customerFavoriteFieldsSchema,
   maskedIdentifiersSchema,
   redactSensitiveText,
   type AiClientIdentificationResult,
   type ClientIdentificationRequest,
   type CustomerCaseSummary,
+  type CustomerFavoriteField,
   type CustomerSummary,
   type MaskedIdentifiers,
   type PendingClientSummary
@@ -60,6 +62,16 @@ export function parseAiIdentificationResult(value: unknown): AiClientIdentificat
 
 export function parseMaskedIdentifiers(value: unknown): MaskedIdentifiers {
   return maskedIdentifiersSchema.parse(value);
+}
+
+export function parseCustomerFavoriteFields(value: unknown): CustomerFavoriteField[] {
+  const parsed = customerFavoriteFieldsSchema.safeParse(value);
+
+  if (!parsed.success) {
+    return [];
+  }
+
+  return Array.from(new Set(parsed.data)).slice(0, 2);
 }
 
 export function buildMaskedIdentifiers(aiResult: AiClientIdentificationResult): MaskedIdentifiers {
@@ -189,7 +201,9 @@ export function toCustomerSummary(customer: {
   }>;
   displayName: string | null;
   domain?: string;
+  favoriteFieldsJson?: unknown;
   id: string;
+  isStarred?: boolean;
   lastSeenAt: Date;
   maskedIdentifiers: unknown;
   notes?: string | null;
@@ -198,7 +212,9 @@ export function toCustomerSummary(customer: {
     cases: customer.cases.map((customerCase) => toCaseSummary(customerCase)),
     ...(customer.displayName ? { displayName: customer.displayName } : {}),
     ...(customer.domain ? { domain: customer.domain } : {}),
+    favoriteFields: parseCustomerFavoriteFields(customer.favoriteFieldsJson),
     id: customer.id,
+    isStarred: customer.isStarred ?? false,
     lastSeenAt: customer.lastSeenAt.toISOString(),
     maskedIdentifiers: parseMaskedIdentifiers(customer.maskedIdentifiers),
     ...(customer.notes ? { notes: customer.notes } : {})

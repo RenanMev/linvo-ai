@@ -6,10 +6,14 @@ import {
   CLIENT_INFO_OPEN_SYSTEM_PROMPT,
   CLIENT_IDENTIFICATION_ENRICHMENT_SYSTEM_PROMPT,
   CLIENT_IDENTIFICATION_SYSTEM_PROMPT,
+  CUSTOMER_CHAT_SUMMARY_SYSTEM_PROMPT,
+  CUSTOMER_CHAT_SYSTEM_PROMPT,
+  MAX_CUSTOMER_CHAT_SUMMARY_CHARS,
   SITE_AGENT_CONTEXT_SYSTEM_PROMPT,
   aiClientIdentificationResultSchema,
   siteAgentContextDraftSchema,
   type AiClientIdentificationResult,
+  type CustomerChatMessage,
   type ClientInfoOpenRequest,
   type ClientIdentificationRequest,
   type CustomerSummary,
@@ -27,6 +31,10 @@ import {
   buildClientIdentificationUserPrompt,
   type ClientDuplicateValidationPromptResult
 } from "./client-identification.prompt";
+import {
+  buildCustomerChatSummaryUserPrompt,
+  buildCustomerChatUserPrompt
+} from "./customer-chat.prompt";
 import { buildSiteContextUserPrompt } from "./site-context.prompt";
 
 interface ChatCompletionResponse {
@@ -35,6 +43,20 @@ interface ChatCompletionResponse {
       content?: string;
     };
   }>;
+}
+
+interface ChatCompletionStreamChunk {
+  choices?: Array<{
+    delta?: {
+      content?: string;
+    };
+  }>;
+}
+
+interface AiChatConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
 }
 
 const aiDuplicateValidationResultSchema = z.object({
@@ -61,6 +83,10 @@ const aiClientInfoOpenSelectionSchema = z.union([
     status: z.literal("no_match")
   })
 ]);
+
+const customerChatSummaryResultSchema = z.object({
+  summary: z.string().trim().max(MAX_CUSTOMER_CHAT_SUMMARY_CHARS).default("")
+});
 
 export type AiClientInfoOpenSelection = z.infer<
   typeof aiClientInfoOpenSelectionSchema
@@ -90,6 +116,51 @@ function parseJsonObject(value: string): unknown {
 @Injectable()
 export class AiClientService {
   constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
+
+  async *streamCustomerChat(input: {
+    customer: CustomerSummary;
+    messages: CustomerChatMessage[];
+    requestId: string;
+    siteContext?: SiteAgentContextSummary | null;
+    summary?: string | null;
+    userMessage: string;
+  }): AsyncGenerator<string> {
+    const chatConfig = this.resolveChatConfig(input.requestId);
+    const userText = buildCustomerChatUserPrompt(input);
+    const response = await this.requestChatCompletionStream({
+      chatConfig,
+      messages: [
+        { content: CUSTOMER_CHAT_SYSTEM_PROMPT, role: "system" },
+        { content: userText, role: "user" }
+      ],
+      requestId: input.requestId
+    });
+
+    yield* response;
+  }
+
+  async summarizeCustomerChat(input: {
+    customer: CustomerSummary;
+    existingSummary?: string | null;
+    messages: CustomerChatMessage[];
+    requestId: string;
+  }): Promise<string> {
+    const parsedContent = await this.requestChatJsonObject({
+      messages: [
+        { content: CUSTOMER_CHAT_SUMMARY_SYSTEM_PROMPT, role: "system" },
+        { content: buildCustomerChatSummaryUserPrompt(input), role: "user" }
+      ],
+      requestId: input.requestId,
+      timeoutMs: 12_000
+    });
+    const parsedResult = customerChatSummaryResultSchema.safeParse(parsedContent);
+
+    if (!parsedResult.success) {
+      throw identificationFailed(input.requestId, "A IA retornou resumo do cliente fora do contrato.");
+    }
+
+    return parsedResult.data.summary;
+  }
 
   async selectClientInfo(input: {
     customers: CustomerSummary[];
@@ -329,5 +400,157 @@ export class AiClientService {
     }
 
     return parsedContent;
+  }
+
+  private resolveChatConfig(requestId: string): AiChatConfig {
+    const apiKey = this.config.AI_CHAT_API_KEY ?? this.config.AI_API_KEY;
+
+    if (!apiKey) {
+      throw new ApiHttpException(
+        503,
+        "AI_UNAVAILABLE",
+        "A chave de IA do chat nao esta configurada.",
+        requestId
+      );
+    }
+
+    return {
+      apiKey,
+      baseUrl: this.config.AI_CHAT_BASE_URL ?? this.config.AI_BASE_URL,
+      model: this.config.AI_CHAT_MODEL ?? this.config.AI_MODEL
+    };
+  }
+
+  private async requestChatJsonObject(input: {
+    messages: Array<{ content: unknown; role: "system" | "user" }>;
+    requestId: string;
+    timeoutMs: number;
+  }): Promise<unknown> {
+    const chatConfig = this.resolveChatConfig(input.requestId);
+    let response: Response;
+
+    try {
+      response = await fetch(chatConfig.baseUrl, {
+        body: JSON.stringify({
+          messages: input.messages,
+          model: chatConfig.model,
+          response_format: { type: "json_object" },
+          temperature: 0
+        }),
+        headers: {
+          authorization: `Bearer ${chatConfig.apiKey}`,
+          "content-type": "application/json"
+        },
+        method: "POST",
+        signal: AbortSignal.timeout(input.timeoutMs)
+      });
+    } catch {
+      throw identificationFailed(input.requestId, "Nao foi possivel contatar a IA do chat agora.");
+    }
+
+    if (!response.ok) {
+      throw identificationFailed(input.requestId, "Nao foi possivel resumir a conversa agora.");
+    }
+
+    let payload: ChatCompletionResponse;
+
+    try {
+      payload = (await response.json()) as ChatCompletionResponse;
+    } catch {
+      throw identificationFailed(input.requestId, "A IA retornou uma resposta invalida.");
+    }
+
+    const content = payload.choices?.[0]?.message?.content;
+
+    if (!content) {
+      throw identificationFailed(input.requestId, "A IA nao retornou uma resposta valida.");
+    }
+
+    const parsedContent = parseJsonObject(content);
+
+    if (!parsedContent) {
+      throw identificationFailed(input.requestId, "A IA retornou JSON invalido.");
+    }
+
+    return parsedContent;
+  }
+
+  private async *requestChatCompletionStream(input: {
+    chatConfig: AiChatConfig;
+    messages: Array<{ content: unknown; role: "system" | "user" }>;
+    requestId: string;
+  }): AsyncGenerator<string> {
+    let response: Response;
+
+    try {
+      response = await fetch(input.chatConfig.baseUrl, {
+        body: JSON.stringify({
+          messages: input.messages,
+          model: input.chatConfig.model,
+          stream: true,
+          temperature: 0.2
+        }),
+        headers: {
+          authorization: `Bearer ${input.chatConfig.apiKey}`,
+          "content-type": "application/json"
+        },
+        method: "POST",
+        signal: AbortSignal.timeout(45_000)
+      });
+    } catch {
+      throw identificationFailed(input.requestId, "Nao foi possivel contatar a IA do chat agora.");
+    }
+
+    if (!response.ok || !response.body) {
+      throw identificationFailed(input.requestId, "Nao foi possivel responder sobre o cliente agora.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+
+          if (!trimmed.startsWith("data:")) {
+            continue;
+          }
+
+          const data = trimmed.slice(5).trim();
+
+          if (!data || data === "[DONE]") {
+            continue;
+          }
+
+          let parsed: ChatCompletionStreamChunk;
+
+          try {
+            parsed = JSON.parse(data) as ChatCompletionStreamChunk;
+          } catch {
+            continue;
+          }
+
+          const text = parsed.choices?.[0]?.delta?.content;
+
+          if (text) {
+            yield text;
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
 }

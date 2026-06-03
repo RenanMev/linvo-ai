@@ -21,6 +21,9 @@ function parseCsv(value: string | undefined): string[] {
 const envSchema = z.object({
   AI_API_KEY: z.string().trim().min(1).optional(),
   AI_BASE_URL: z.string().url().default("https://api.openai.com/v1/chat/completions"),
+  AI_CHAT_API_KEY: z.string().trim().min(1).optional(),
+  AI_CHAT_BASE_URL: z.string().url().optional(),
+  AI_CHAT_MODEL: z.string().trim().min(1).optional(),
   AI_MODEL: z.string().trim().min(1).default("gpt-4.1-mini"),
   CORS_ALLOWED_ORIGINS: z.string().trim().optional(),
   DATABASE_URL: z.string().trim().min(1),

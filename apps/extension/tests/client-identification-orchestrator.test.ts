@@ -13,10 +13,13 @@ const authSessionMocks = vi.hoisted(() => ({
 }));
 
 const apiClientMocks = vi.hoisted(() => ({
+  clearCustomerChat: vi.fn(),
   decideBulkClientIdentification: vi.fn(),
   decideClientIdentification: vi.fn(),
   deleteCustomer: vi.fn(),
   deleteSiteContext: vi.fn(),
+  getCustomerChat: vi.fn(),
+  getCustomerDetail: vi.fn(),
   getSiteContext: vi.fn(),
   identifyClient: vi.fn(),
   identifyClientsBulk: vi.fn(),

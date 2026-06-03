@@ -17,8 +17,11 @@ import {
 import {
   decideBulkClientIdentification,
   decideClientIdentification,
+  clearCustomerChat,
   deleteCustomer,
   deleteSiteContext,
+  getCustomerChat,
+  getCustomerDetail,
   getSiteContext,
   identifyClient,
   identifyClientsBulk,
@@ -164,6 +167,9 @@ export function handleClientIdentificationMessage(
     message.type !== "assist/client-identification.decision" &&
     message.type !== "assist/client-identification.bulk.request" &&
     message.type !== "assist/client-identification.bulk.decision" &&
+    message.type !== "assist/customer.get" &&
+    message.type !== "assist/customer-chat.clear" &&
+    message.type !== "assist/customer-chat.get" &&
     message.type !== "assist/customer.delete" &&
     message.type !== "assist/customer.update" &&
     message.type !== "assist/customers.list" &&
@@ -227,6 +233,93 @@ export function handleClientIdentificationMessage(
         sendResponse({ ok: true, response });
       } catch (error) {
         sendResponse(runtimeErrorResponse(error, "Entre novamente para carregar contatos."));
+      }
+    })();
+
+    return true;
+  }
+
+  if (message.type === "assist/customer.get") {
+    void (async () => {
+      const session = await getAuthSession();
+
+      if (!session) {
+        sendResponse({
+          error: {
+            errorCode: "AUTH_REQUIRED",
+            message: "Entre novamente para carregar o contato."
+          },
+          ok: false
+        });
+        return;
+      }
+
+      try {
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => getCustomerDetail(accessToken, message.customerId)
+        );
+        sendResponse({ ok: true, response });
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para carregar o contato."));
+      }
+    })();
+
+    return true;
+  }
+
+  if (message.type === "assist/customer-chat.get") {
+    void (async () => {
+      const session = await getAuthSession();
+
+      if (!session) {
+        sendResponse({
+          error: {
+            errorCode: "AUTH_REQUIRED",
+            message: "Entre novamente para carregar a conversa."
+          },
+          ok: false
+        });
+        return;
+      }
+
+      try {
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => getCustomerChat(accessToken, message.customerId)
+        );
+        sendResponse({ ok: true, response });
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para carregar a conversa."));
+      }
+    })();
+
+    return true;
+  }
+
+  if (message.type === "assist/customer-chat.clear") {
+    void (async () => {
+      const session = await getAuthSession();
+
+      if (!session) {
+        sendResponse({
+          error: {
+            errorCode: "AUTH_REQUIRED",
+            message: "Entre novamente para limpar a conversa."
+          },
+          ok: false
+        });
+        return;
+      }
+
+      try {
+        const response = await requestWithAuthRefresh(
+          session,
+          (accessToken) => clearCustomerChat(accessToken, message.customerId)
+        );
+        sendResponse({ ok: true, response });
+      } catch (error) {
+        sendResponse(runtimeErrorResponse(error, "Entre novamente para limpar a conversa."));
       }
     })();
 
