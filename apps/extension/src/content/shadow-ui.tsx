@@ -5,6 +5,7 @@ import { getExtensionAssetUrl } from "@/lib/extension-assets";
 
 export interface ShadowReactMount {
   host: HTMLElement;
+  portalRoot: HTMLElement;
   render: (node: ReactNode) => void;
   shadowRoot: ShadowRoot;
   unmount: () => void;
@@ -21,14 +22,18 @@ export function createShadowReactMount(hostId: string): ShadowReactMount {
   stylesheet.rel = "stylesheet";
   stylesheet.href = getExtensionAssetUrl("linvo-ui.css");
   const mountPoint = document.createElement("div");
+  const portalRoot = document.createElement("div");
 
-  shadowRoot.append(stylesheet, mountPoint);
+  portalRoot.dataset.linvoPortalRoot = "true";
+
+  shadowRoot.append(stylesheet, mountPoint, portalRoot);
   document.documentElement.append(host);
 
   const reactRoot: Root = createRoot(mountPoint);
 
   return {
     host,
+    portalRoot,
     render: (node) => reactRoot.render(node),
     shadowRoot,
     unmount: () => {

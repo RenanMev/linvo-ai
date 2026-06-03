@@ -118,8 +118,11 @@ describe("installFloatingAction", () => {
     const launcher = shadowRoot?.querySelector("[data-linvo-role='launcher']");
 
     expect(roots).toHaveLength(1);
+    expect(root?.getAttribute("data-linvo-extension-id")).toBe("local-preview");
     expect(launcher).toBeInstanceOf(HTMLButtonElement);
     expect(launcher?.getAttribute("aria-label")).toBe("Abrir acoes Linvo AI");
+    expect(launcher?.hasAttribute("title")).toBe(false);
+    expect(shadowRoot?.querySelector("[data-linvo-portal-root='true']")).toBeInstanceOf(HTMLDivElement);
     expect(shadowRoot?.querySelector("[role='menu']")).toBeInstanceOf(HTMLDivElement);
     expect(shadowRoot?.querySelector("[role='menu']")?.className).toContain("opacity-0");
   });
@@ -157,5 +160,29 @@ describe("installFloatingAction", () => {
     expect(clientAction?.getAttribute("aria-label")).toBe("Identificar cliente");
     expect(listAction?.getAttribute("aria-label")).toBe("Identificar lista");
     expect(infoAction?.getAttribute("aria-label")).toBe("Abrir info");
+    expect(clientAction?.hasAttribute("title")).toBe(false);
+    expect(listAction?.hasAttribute("title")).toBe(false);
+    expect(infoAction?.hasAttribute("title")).toBe(false);
+  });
+
+  it("replaces a stale floating action from another extension instance", async () => {
+    const staleRoot = document.createElement("div");
+    staleRoot.id = ROOT_ID;
+    staleRoot.dataset.linvoExtensionId = "old-extension";
+    document.documentElement.append(staleRoot);
+
+    await act(async () => {
+      installFloatingAction();
+    });
+
+    const roots = document.querySelectorAll(`#${ROOT_ID}`);
+    const root = roots[0];
+
+    expect(roots).toHaveLength(1);
+    expect(root).not.toBe(staleRoot);
+    expect(root?.getAttribute("data-linvo-extension-id")).toBe("local-preview");
+    expect(root?.shadowRoot?.querySelector("[data-linvo-role='launcher']")).toBeInstanceOf(
+      HTMLButtonElement
+    );
   });
 });
