@@ -20,7 +20,10 @@ import type {
   CustomerDeleteRequest,
   CustomerUpdateApiResponse,
   CustomerUpdateRequest,
-  CustomersListResponse
+  CustomersListResponse,
+  SiteContextDeleteApiResponse,
+  SiteContextDeleteRequest,
+  SiteContextGetApiResponse
 } from "@linvo-ai/shared";
 
 export const CLIENT_INFO_OPEN_SELECTION_STORAGE_KEY =
@@ -41,7 +44,9 @@ export type RuntimeRequestMessage =
   | { type: "assist/client-identification.bulk.decision"; request: BulkClientIdentificationDecisionRequest }
   | { type: "assist/customer.delete"; request: CustomerDeleteRequest }
   | { type: "assist/customer.update"; request: CustomerUpdateRequest }
-  | { type: "assist/customers.list"; domain?: string };
+  | { type: "assist/customers.list"; domain?: string }
+  | { type: "assist/site-context.get"; domain: string }
+  | { type: "assist/site-context.delete"; request: SiteContextDeleteRequest };
 
 export type RuntimeResponseMessage =
   | { ok: true; response: AuthSessionResponse }
@@ -55,6 +60,8 @@ export type RuntimeResponseMessage =
   | { ok: true; response: CustomerDeleteApiResponse }
   | { ok: true; response: CustomerUpdateApiResponse }
   | { ok: true; response: CustomersListResponse }
+  | { ok: true; response: SiteContextGetApiResponse }
+  | { ok: true; response: SiteContextDeleteApiResponse }
   | { ok: true }
   | { error: { errorCode: string; message: string }; ok: false };
 
