@@ -27,6 +27,8 @@ const pendingResponse: ClientIdentificationApiResponse = {
   requestId: "req-1",
   saveState: "pending_confirmation",
   saved: false,
+  siteContext: null,
+  siteContextStatus: "missing",
   status: "ok",
   warnings: []
 };

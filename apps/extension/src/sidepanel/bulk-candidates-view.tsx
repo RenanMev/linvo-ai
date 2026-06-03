@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Trash2Icon } from "lucide-react";
+import { LoaderCircleIcon, Trash2Icon } from "lucide-react";
 
 interface BulkCandidatesViewProps {
   deleteLoadingRequestIds?: Set<string>;
@@ -82,7 +82,7 @@ export function BulkCandidatesView({
 
   if (result.status === "error") {
     return (
-      <Card>
+      <Card className="linvo-motion-rise">
         <CardHeader>
           <CardTitle className="text-base">Clientes encontrados</CardTitle>
         </CardHeader>
@@ -125,7 +125,7 @@ export function BulkCandidatesView({
   }
 
   return (
-    <Card>
+    <Card className="linvo-motion-rise">
       <CardHeader className="flex items-center justify-between gap-3">
         <CardTitle className="text-base">Clientes encontrados</CardTitle>
         <Badge variant="linvo">{result.candidates.length}</Badge>
@@ -141,7 +141,7 @@ export function BulkCandidatesView({
               const deleteLoading = deleteLoadingRequestIds.has(candidate.requestId);
 
               return (
-                <li key={candidate.requestId}>
+                <li className="linvo-motion-rise" key={candidate.requestId}>
                   <div className="rounded-lg border bg-card p-2">
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                       <label className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 text-sm">
@@ -168,7 +168,11 @@ export function BulkCandidatesView({
                       variant="destructive"
                       onClick={() => onDeleteCandidate?.(candidate)}
                     >
-                        <Trash2Icon className="size-4" />
+                        {deleteLoading ? (
+                          <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+                        ) : (
+                          <Trash2Icon className="size-4" />
+                        )}
                         <span className="sr-only">{deleteLoading ? "Apagando" : "Delete"}</span>
                       </Button>
                     </div>
@@ -187,6 +191,9 @@ export function BulkCandidatesView({
             variant="linvo"
             onClick={submit}
           >
+            {decisionLoading ? (
+              <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+            ) : null}
             {decisionLoading ? "Adicionando..." : `Adicionar selecionados (${selectedCount})`}
           </Button>
         </div>

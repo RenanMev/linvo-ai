@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { LoadingInfo } from "@/components/ui/loading-info";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { RefreshCwIcon, SaveIcon, Trash2Icon } from "lucide-react";
+import { LoaderCircleIcon, RefreshCwIcon, SaveIcon, Trash2Icon } from "lucide-react";
 
 export interface ContactCaseDraft {
   caseId?: string;
@@ -78,16 +79,21 @@ export function ContactsView({
 }: ContactsViewProps) {
   const selectedCustomer =
     customers.find((customer) => customer.id === selectedCustomerId) ?? customers[0] ?? null;
+  const initialLoading = loading && customers.length === 0;
 
   return (
-    <Card>
+    <Card className="linvo-motion-rise">
       <CardHeader className="flex items-center justify-between gap-3">
         <CardTitle className="text-base">Contatos</CardTitle>
         <div className="flex items-center gap-2">
           <Badge variant="linvo">{customers.length}</Badge>
           <Button disabled={loading} size="sm" type="button" variant="secondary" onClick={onRefresh}>
-            <RefreshCwIcon className={loading ? "size-4 animate-spin" : "size-4"} />
-            {loading ? "Carregando..." : "Atualizar"}
+            {loading ? (
+              <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+            ) : (
+              <RefreshCwIcon className="size-4" />
+            )}
+            {loading ? "Atualizando" : "Atualizar"}
           </Button>
         </div>
       </CardHeader>
@@ -99,17 +105,30 @@ export function ContactsView({
         </Alert>
       ) : null}
 
-      {customers.length === 0 ? (
+      {initialLoading ? (
+        <LoadingInfo
+          compact
+          description="Buscando clientes salvos e mantendo sua selecao pronta."
+          skeletonLines={3}
+          title="Carregando contatos"
+        />
+      ) : customers.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nenhum contato salvo ainda. Identifique ou adicione clientes para montar sua base.</p>
       ) : (
         <div className="grid gap-3">
+          {loading ? (
+            <span className="linvo-refresh-note">
+              <LoaderCircleIcon className="linvo-inline-spinner size-3" />
+              Sincronizando contatos salvos
+            </span>
+          ) : null}
           <ScrollArea className="max-h-56">
           <ul className="grid gap-2 pr-3">
             {customers.map((customer) => {
               const isDeleting = deletingCustomerId === customer.id;
 
               return (
-                <li key={customer.id}>
+                <li className="linvo-motion-rise" key={customer.id}>
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                     <Button
                       className="h-auto min-w-0 justify-start p-3 text-left"
@@ -132,7 +151,11 @@ export function ContactsView({
                       variant="destructive"
                       onClick={() => onDelete(customer)}
                     >
-                      <Trash2Icon className="size-4" />
+                      {isDeleting ? (
+                        <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+                      ) : (
+                        <Trash2Icon className="size-4" />
+                      )}
                       <span className="sr-only">{isDeleting ? "Apagando" : "Delete"}</span>
                     </Button>
                   </div>
@@ -143,7 +166,7 @@ export function ContactsView({
           </ScrollArea>
 
           {selectedCustomer ? (
-            <article className="grid gap-4 rounded-lg border bg-muted/30 p-3">
+            <article className="linvo-motion-rise grid gap-4 rounded-lg border bg-muted/30 p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-xs text-muted-foreground">Contato selecionado</p>
@@ -156,7 +179,11 @@ export function ContactsView({
                   variant="destructive"
                   onClick={() => onDelete(selectedCustomer)}
                 >
-                  <Trash2Icon className="size-4" />
+                  {deletingCustomerId === selectedCustomer.id ? (
+                    <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+                  ) : (
+                    <Trash2Icon className="size-4" />
+                  )}
                   {deletingCustomerId === selectedCustomer.id ? "Apagando" : "Delete"}
                 </Button>
               </div>
@@ -263,7 +290,11 @@ export function ContactsView({
                 variant="linvo"
                 onClick={onSave}
               >
-                <SaveIcon className="size-4" />
+                {saving ? (
+                  <LoaderCircleIcon className="linvo-inline-spinner size-4" />
+                ) : (
+                  <SaveIcon className="size-4" />
+                )}
                 {saving ? "Salvando..." : "Salvar informacoes"}
               </Button>
             </article>

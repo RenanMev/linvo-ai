@@ -24,7 +24,7 @@ const buttonVariants = cva(
           "bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         linvo:
-          "bg-teal-600 text-white shadow-xs hover:bg-teal-700 focus-visible:ring-teal-500/30",
+          "border border-[var(--brand-600)] bg-[var(--brand-500)] text-[var(--text-on-brand)] shadow-xs hover:bg-[var(--brand-600)] focus-visible:ring-[var(--brand-glow)]",
         outline:
           "border border-input bg-background shadow-xs hover:bg-accent hover:text-accent-foreground",
         secondary:
