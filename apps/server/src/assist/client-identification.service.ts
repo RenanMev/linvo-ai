@@ -8,6 +8,7 @@ import {
   clientInfoOpenSuccessResponseSchema,
   clientIdentificationDecisionResponseSchema,
   clientIdentificationSuccessResponseSchema,
+  customerDetailResponseSchema,
   customerUpdateResponseSchema,
   siteContextDeleteResponseSchema,
   siteContextGetResponseSchema,
@@ -563,6 +564,22 @@ export class ClientIdentificationService {
     };
   }
 
+  async getCustomerDetail(userId: string, customerId: string) {
+    const customer = await this.customerRepository.getCustomerDetail({
+      customerId,
+      userId
+    });
+
+    if (!customer) {
+      throw new ApiHttpException(404, "INVALID_REQUEST", "Cliente nao encontrado.");
+    }
+
+    return customerDetailResponseSchema.parse({
+      customer,
+      status: "ok"
+    });
+  }
+
   async getSiteContext(userId: string, domain: string) {
     const normalizedDomain = domain.trim().toLowerCase();
 
@@ -594,6 +611,8 @@ export class ClientIdentificationService {
       ...(request.case !== undefined ? { case: request.case } : {}),
       customerId: request.customerId,
       ...(request.displayName !== undefined ? { displayName: request.displayName } : {}),
+      ...(request.favoriteFields !== undefined ? { favoriteFields: request.favoriteFields } : {}),
+      ...(request.isStarred !== undefined ? { isStarred: request.isStarred } : {}),
       ...(request.maskedIdentifiers !== undefined
         ? { maskedIdentifiers: request.maskedIdentifiers }
         : {}),
@@ -607,7 +626,7 @@ export class ClientIdentificationService {
 
     return customerUpdateResponseSchema.parse({
       customer: updated.customer,
-      customers: await this.customerRepository.listRecentCustomers(userId),
+      customers: await this.customerRepository.listRecentCustomers(userId, updated.domain),
       domain: updated.domain,
       status: "ok"
     });

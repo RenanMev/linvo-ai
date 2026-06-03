@@ -11,7 +11,14 @@ import {
   clientInfoOpenApiResponseSchema,
   clientIdentificationDecisionApiResponseSchema,
   clientIdentificationApiResponseSchema,
+  customerChatClearApiResponseSchema,
+  customerChatStreamCompleteEventSchema,
+  customerChatStreamDeltaEventSchema,
+  customerChatStreamErrorEventSchema,
+  customerChatStreamStartEventSchema,
+  customerChatThreadApiResponseSchema,
   customerDeleteApiResponseSchema,
+  customerDetailApiResponseSchema,
   customerUpdateApiResponseSchema,
   customersListResponseSchema,
   siteContextDeleteApiResponseSchema,
@@ -35,8 +42,16 @@ import {
   type ClientIdentificationDecisionRequest,
   type ClientIdentificationApiResponse,
   type ClientIdentificationRequest,
+  type CustomerChatClearApiResponse,
+  type CustomerChatStreamCompleteEvent,
+  type CustomerChatStreamDeltaEvent,
+  type CustomerChatStreamErrorEvent,
+  type CustomerChatStreamRequest,
+  type CustomerChatStreamStartEvent,
+  type CustomerChatThreadApiResponse,
   type CustomerDeleteApiResponse,
   type CustomerDeleteRequest,
+  type CustomerDetailApiResponse,
   type CustomerUpdateApiResponse,
   type CustomerUpdateRequest,
   type CustomersListResponse,
@@ -351,6 +366,52 @@ export async function listCustomers(
   );
 }
 
+export async function getCustomerDetail(
+  accessToken: string,
+  customerId: string
+): Promise<CustomerDetailApiResponse> {
+  return parseSchema(
+    customerDetailApiResponseSchema,
+    await getJson(
+      await getBackendUrl(),
+      `/assist/customers/${encodeURIComponent(customerId)}`,
+      accessToken
+    ),
+    { throwApiError: false }
+  );
+}
+
+export async function getCustomerChat(
+  accessToken: string,
+  customerId: string
+): Promise<CustomerChatThreadApiResponse> {
+  return parseSchema(
+    customerChatThreadApiResponseSchema,
+    await getJson(
+      await getBackendUrl(),
+      `/assist/customers/${encodeURIComponent(customerId)}/chat`,
+      accessToken
+    ),
+    { throwApiError: false }
+  );
+}
+
+export async function clearCustomerChat(
+  accessToken: string,
+  customerId: string
+): Promise<CustomerChatClearApiResponse> {
+  return parseSchema(
+    customerChatClearApiResponseSchema,
+    await postJson(
+      await getBackendUrl(),
+      `/assist/customers/${encodeURIComponent(customerId)}/chat/clear`,
+      {},
+      accessToken
+    ),
+    { throwApiError: false }
+  );
+}
+
 export async function getSiteContext(
   accessToken: string,
   domain: string
@@ -397,4 +458,162 @@ export async function updateCustomer(
     await postJson(await getBackendUrl(), "/assist/customers/update", request, accessToken),
     { throwApiError: false }
   );
+}
+
+export interface CustomerChatStreamHandlers {
+  onComplete?: (event: CustomerChatStreamCompleteEvent) => void;
+  onDelta?: (event: CustomerChatStreamDeltaEvent) => void;
+  onError?: (event: CustomerChatStreamErrorEvent) => void;
+  onStart?: (event: CustomerChatStreamStartEvent) => void;
+}
+
+interface SseEvent {
+  data: unknown;
+  event: string;
+}
+
+function parseSseEvent(raw: string): SseEvent | null {
+  const lines = raw.split(/\r?\n/);
+  let event = "message";
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+      continue;
+    }
+
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+
+  if (!dataLines.length) {
+    return null;
+  }
+
+  try {
+    return {
+      data: JSON.parse(dataLines.join("\n")) as unknown,
+      event
+    };
+  } catch {
+    return null;
+  }
+}
+
+function dispatchSseEvent(event: SseEvent, handlers: CustomerChatStreamHandlers): void {
+  if (event.event === "start") {
+    const parsed = customerChatStreamStartEventSchema.safeParse(event.data);
+
+    if (parsed.success) {
+      handlers.onStart?.(parsed.data);
+    }
+    return;
+  }
+
+  if (event.event === "delta") {
+    const parsed = customerChatStreamDeltaEventSchema.safeParse(event.data);
+
+    if (parsed.success) {
+      handlers.onDelta?.(parsed.data);
+    }
+    return;
+  }
+
+  if (event.event === "complete") {
+    const parsed = customerChatStreamCompleteEventSchema.safeParse(event.data);
+
+    if (parsed.success) {
+      handlers.onComplete?.(parsed.data);
+    }
+    return;
+  }
+
+  if (event.event === "error") {
+    const parsed = customerChatStreamErrorEventSchema.safeParse(event.data);
+
+    if (parsed.success) {
+      handlers.onError?.(parsed.data);
+    }
+  }
+}
+
+export async function streamCustomerChat(
+  accessToken: string,
+  customerId: string,
+  request: CustomerChatStreamRequest,
+  handlers: CustomerChatStreamHandlers
+): Promise<void> {
+  let response: Response;
+
+  try {
+    response = await fetch(
+      buildUrl(
+        await getBackendUrl(),
+        `/assist/customers/${encodeURIComponent(customerId)}/chat/stream`
+      ),
+      {
+        body: JSON.stringify(request),
+        headers: {
+          accept: "text/event-stream",
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json"
+        },
+        method: "POST"
+      }
+    );
+  } catch {
+    throw new ApiClientError(
+      "INTERNAL_ERROR",
+      "Nao foi possivel conectar ao servidor local. Verifique se o Linvo AI Server esta aberto."
+    );
+  }
+
+  if (!response.ok) {
+    const body = await readJson(response);
+    const apiError = apiErrorFromBody(body, response.status);
+
+    throw apiError ?? unexpectedResponse(response.status);
+  }
+
+  if (!response.body) {
+    throw unexpectedResponse(response.status);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split(/\r?\n\r?\n/);
+      buffer = chunks.pop() ?? "";
+
+      for (const chunk of chunks) {
+        const event = parseSseEvent(chunk.trim());
+
+        if (event) {
+          dispatchSseEvent(event, handlers);
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const event = parseSseEvent(buffer.trim());
+
+      if (event) {
+        dispatchSseEvent(event, handlers);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }

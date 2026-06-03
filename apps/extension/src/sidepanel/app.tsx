@@ -6,6 +6,8 @@ import type {
   BulkClientIdentificationCandidate,
   ClientIdentificationApiResponse,
   ClientIdentificationDecisionResponse,
+  CustomerChatMessage,
+  CustomerFavoriteField,
   CustomerSummary,
   SiteAgentContextSummary
 } from "@linvo-ai/shared";
@@ -22,14 +24,18 @@ import type {
   IdentificationUpdatedMessage,
   RuntimeResponseMessage
 } from "../lib/runtime-messages";
+import { getAuthSession } from "../lib/auth-session";
+import { streamCustomerChat } from "../lib/api-client";
 import { CLIENT_INFO_OPEN_SELECTION_STORAGE_KEY } from "../lib/runtime-messages";
 import { AuthView } from "./auth-view";
 import { BulkCandidatesView } from "./bulk-candidates-view";
 import {
-  ContactsView,
+  ContactDetailView,
   type ContactCaseDraft,
+  type ContactDetailDraft,
   type ContactIdentifierDrafts
-} from "./contacts-view";
+} from "./contact-detail-view";
+import { ContactsView } from "./contacts-view";
 import { CustomerView } from "./customer-view";
 import { DesignSystemView } from "./design-system-view";
 import { SiteContextView } from "./site-context-view";
@@ -69,6 +75,28 @@ function hasChromeRuntime(): boolean {
 function hasChromeMessageBus(): boolean {
   return typeof chrome !== "undefined" &&
     Boolean(chrome.runtime?.onMessage);
+}
+
+async function readActiveTabDomain(): Promise<string | null> {
+  if (typeof chrome === "undefined" || !chrome.tabs?.query) {
+    return null;
+  }
+
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true
+    });
+    const url = new URL(tab?.url ?? "");
+
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+
+    return url.hostname.toLowerCase();
+  } catch {
+    return null;
+  }
 }
 
 interface PendingClientInfoOpenSelection {
@@ -181,15 +209,29 @@ export function App() {
   const [decisionLoading, setDecisionLoading] = useState<"accept" | "reject" | null>(null);
   const [bulkDecisionLoading, setBulkDecisionLoading] = useState(false);
   const [bulkDeleteLoadingIds, setBulkDeleteLoadingIds] = useState<Set<string>>(new Set());
+  const [activeDomain, setActiveDomain] = useState<string | null>(null);
+  const [contactSearchQuery, setContactSearchQuery] = useState("");
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
+  const [contactDetail, setContactDetail] = useState<CustomerSummary | null>(null);
   const [contactCaseDraft, setContactCaseDraft] =
     useState<ContactCaseDraft>(EMPTY_CASE_DRAFT);
   const [contactIdentifierDrafts, setContactIdentifierDrafts] =
     useState<ContactIdentifierDrafts>(EMPTY_IDENTIFIER_DRAFTS);
+  const [contactFavoriteFieldDrafts, setContactFavoriteFieldDrafts] =
+    useState<Array<CustomerFavoriteField | "">>(["", ""]);
   const [contactNameDraft, setContactNameDraft] = useState("");
   const [contactNotesDraft, setContactNotesDraft] = useState("");
+  const [contactEditing, setContactEditing] = useState(false);
   const [contactSaving, setContactSaving] = useState(false);
+  const [contactStarSaving, setContactStarSaving] = useState(false);
   const [contactDeletingId, setContactDeletingId] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<CustomerChatMessage[]>([]);
+  const [chatSummary, setChatSummary] = useState<string | null>(null);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatError, setChatError] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatSending, setChatSending] = useState(false);
+  const [chatStreamingText, setChatStreamingText] = useState("");
 
   useEffect(() => {
     const listener = () => setSidepanelScreen(screenFromHash());
@@ -214,7 +256,7 @@ export function App() {
     void chrome.runtime.sendMessage({ type: "auth/me" }).then((response: RuntimeResponseMessage) => {
       if (response.ok && "user" in response && response.user) {
         setSession({ status: "logged_in", user: response.user });
-        void loadContacts();
+        void refreshActiveDomainAndContacts();
         return;
       }
 
@@ -249,7 +291,7 @@ export function App() {
               ? "O cliente foi identificado, mas o contexto do site nao pode ser atualizado agora."
               : ""
           );
-          void loadContacts();
+          void loadContacts(message.response.domain);
         }
       }
 
@@ -257,20 +299,25 @@ export function App() {
         setBulkResult(message.response);
 
         if (message.response.status === "ok") {
-          void loadContacts();
+          void loadContacts(message.response.domain);
         }
       }
 
       if (message.type === "assist/client-info.opened") {
         if (message.response.status === "ok") {
+          setActiveDomain(message.response.domain);
           setContacts(message.response.customers);
           setSelectedContactId(message.response.customer.id);
+          setContactDetail(message.response.customer);
+          setContactEditing(false);
           setContactsError("");
+          void loadCustomerChat(message.response.customer.id);
           void loadSiteContext(message.response.domain);
           return;
         }
 
         if (message.response.status === "no_match") {
+          setActiveDomain(message.response.domain);
           setContacts(message.response.customers);
           setContactsError(message.response.reason);
         }
@@ -282,25 +329,26 @@ export function App() {
   }, [sidepanelScreen]);
 
   const selectedContact =
-    contacts.find((customer) => customer.id === selectedContactId) ?? contacts[0] ?? null;
+    contactDetail ?? contacts.find((customer) => customer.id === selectedContactId) ?? null;
 
   useEffect(() => {
     if (
       sidepanelScreen !== "assistant" ||
       session.status !== "logged_in" ||
-      !selectedContact?.domain ||
+      !activeDomain ||
       !hasChromeRuntime()
     ) {
       return;
     }
 
-    void loadSiteContext(selectedContact.domain);
-  }, [sidepanelScreen, session.status, selectedContact?.domain]);
+    void loadSiteContext(activeDomain);
+  }, [activeDomain, sidepanelScreen, session.status]);
 
   useEffect(() => {
     if (!selectedContact) {
       setContactCaseDraft(EMPTY_CASE_DRAFT);
       setContactIdentifierDrafts(EMPTY_IDENTIFIER_DRAFTS);
+      setContactFavoriteFieldDrafts(["", ""]);
       setContactNameDraft("");
       setContactNotesDraft("");
       return;
@@ -309,17 +357,47 @@ export function App() {
     setSelectedContactId(selectedContact.id);
     setContactCaseDraft(caseDraftFromCustomer(selectedContact));
     setContactIdentifierDrafts(identifierDraftsFromCustomer(selectedContact));
+    setContactFavoriteFieldDrafts([
+      selectedContact.favoriteFields[0] ?? "",
+      selectedContact.favoriteFields[1] ?? ""
+    ]);
     setContactNameDraft(selectedContact.displayName ?? "");
     setContactNotesDraft(selectedContact.notes ?? "");
   }, [selectedContact?.id]);
 
-  async function loadContacts() {
+  async function refreshActiveDomainAndContacts() {
+    const domain = await readActiveTabDomain();
+
+    setActiveDomain(domain);
+
+    if (!domain) {
+      setContacts([]);
+      setSelectedContactId(null);
+      setContactDetail(null);
+      setContactsError("");
+      setSiteContext(null);
+      return;
+    }
+
+    await loadContacts(domain);
+  }
+
+  async function loadContacts(domain = activeDomain) {
+    if (!domain) {
+      setContacts([]);
+      setSelectedContactId(null);
+      setContactDetail(null);
+      setContactsError("");
+      return;
+    }
+
     setContactsLoading(true);
     setContactsError("");
 
     try {
       const preferredCustomerId = await readPendingClientInfoOpenCustomerId();
       const response = await chrome.runtime.sendMessage({
+        domain,
         type: "assist/customers.list"
       }) as RuntimeResponseMessage;
 
@@ -331,18 +409,108 @@ export function App() {
       if ("response" in response && response.response.status === "ok" && "customers" in response.response) {
         const loadedCustomers = response.response.customers;
         setContacts(loadedCustomers);
+        setActiveDomain(response.response.domain ?? domain);
+
+        if (
+          preferredCustomerId &&
+          loadedCustomers.some((customer) => customer.id === preferredCustomerId)
+        ) {
+          void openContactDetail(preferredCustomerId, loadedCustomers);
+          return;
+        }
+
         setSelectedContactId((current) =>
-          preferredCustomerId && loadedCustomers.some((customer) => customer.id === preferredCustomerId)
-            ? preferredCustomerId
-            : current && loadedCustomers.some((customer) => customer.id === current)
+          current && loadedCustomers.some((customer) => customer.id === current)
             ? current
-            : loadedCustomers[0]?.id ?? null
+            : null
+        );
+        setContactDetail((current) =>
+          current && loadedCustomers.some((customer) => customer.id === current.id)
+            ? current
+            : null
         );
       }
     } catch {
       setContactsError("Nao foi possivel carregar seus contatos agora.");
     } finally {
       setContactsLoading(false);
+    }
+  }
+
+  async function loadCustomerDetail(customerId: string): Promise<CustomerSummary | null> {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        customerId,
+        type: "assist/customer.get"
+      }) as RuntimeResponseMessage;
+
+      if (!response.ok) {
+        setContactsError(response.error.message);
+        return null;
+      }
+
+      if ("response" in response && response.response.status === "ok" && "customer" in response.response) {
+        const loadedCustomer = response.response.customer;
+
+        setContactDetail(loadedCustomer);
+        setContacts((current) =>
+          current.map((customer) =>
+            customer.id === loadedCustomer.id
+              ? loadedCustomer
+              : customer
+          )
+        );
+        return loadedCustomer;
+      }
+    } catch {
+      setContactsError("Nao foi possivel carregar o contato.");
+    }
+
+    return null;
+  }
+
+  async function openContactDetail(
+    customerId: string,
+    sourceCustomers = contacts
+  ): Promise<void> {
+    const existing = sourceCustomers.find((customer) => customer.id === customerId) ?? null;
+
+    setSelectedContactId(customerId);
+    setContactDetail(existing);
+    setContactEditing(false);
+    setChatMessages([]);
+    setChatSummary(null);
+    setChatDraft("");
+    setChatError("");
+    setChatStreamingText("");
+
+    await loadCustomerDetail(customerId);
+    void loadCustomerChat(customerId);
+  }
+
+  async function loadCustomerChat(customerId: string): Promise<void> {
+    setChatLoading(true);
+    setChatError("");
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        customerId,
+        type: "assist/customer-chat.get"
+      }) as RuntimeResponseMessage;
+
+      if (!response.ok) {
+        setChatError(response.error.message);
+        return;
+      }
+
+      if ("response" in response && response.response.status === "ok" && "messages" in response.response) {
+        setChatMessages(response.response.messages);
+        setChatSummary(response.response.summary);
+      }
+    } catch {
+      setChatError("Nao foi possivel carregar a conversa.");
+    } finally {
+      setChatLoading(false);
     }
   }
 
@@ -435,7 +603,7 @@ export function App() {
       }
 
       if ("response" in response && response.response.status === "ok" && "decision" in response.response) {
-        void loadContacts();
+        void loadContacts(response.response.domain);
         const nextResult = resultFromDecision(result, response.response);
 
         setSiteContext(response.response.siteContext);
@@ -489,7 +657,7 @@ export function App() {
       }
 
       if ("response" in response && response.response.status === "ok" && "acceptedCount" in response.response) {
-        void loadContacts();
+        void loadContacts(response.response.domain);
         setBulkResult(null);
         return;
       }
@@ -597,6 +765,9 @@ export function App() {
           },
           customerId: selectedContact.id,
           displayName: contactNameDraft,
+          favoriteFields: Array.from(
+            new Set(contactFavoriteFieldDrafts.filter(Boolean))
+          ) as CustomerFavoriteField[],
           maskedIdentifiers: contactIdentifierDrafts,
           notes: contactNotesDraft
         },
@@ -608,9 +779,18 @@ export function App() {
         return;
       }
 
-      if ("response" in response && response.response.status === "ok" && "customer" in response.response) {
-        setContacts(response.response.customers);
-        setSelectedContactId(response.response.customer.id);
+      if (
+        "response" in response &&
+        response.response.status === "ok" &&
+        "customer" in response.response &&
+        "customers" in response.response
+      ) {
+        const updateResponse = response.response;
+
+        setContacts(updateResponse.customers);
+        setSelectedContactId(updateResponse.customer.id);
+        setContactDetail(updateResponse.customer);
+        setContactEditing(false);
       }
     } catch {
       setContactsError("Nao foi possivel salvar as informacoes do contato.");
@@ -636,23 +816,86 @@ export function App() {
     }));
   }
 
-  async function handleDeleteContact(customer: CustomerSummary) {
+  function handleFavoriteFieldChange(index: number, value: CustomerFavoriteField | "") {
+    setContactFavoriteFieldDrafts((current) => {
+      const next = [...current];
+      next[index] = value;
+      return [next[0] ?? "", next[1] ?? ""];
+    });
+  }
+
+  async function handleToggleStar() {
+    if (!selectedContact) {
+      return;
+    }
+
+    setContactStarSaving(true);
+    setContactsError("");
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        request: {
+          customerId: selectedContact.id,
+          isStarred: !selectedContact.isStarred
+        },
+        type: "assist/customer.update"
+      }) as RuntimeResponseMessage;
+
+      if (!response.ok) {
+        setContactsError(response.error.message);
+        return;
+      }
+
+      if (
+        "response" in response &&
+        response.response.status === "ok" &&
+        "customer" in response.response &&
+        "customers" in response.response
+      ) {
+        const updateResponse = response.response;
+
+        setContacts(updateResponse.customers);
+        setContactDetail(updateResponse.customer);
+      }
+    } catch {
+      setContactsError("Nao foi possivel atualizar a estrela do contato.");
+    } finally {
+      setContactStarSaving(false);
+    }
+  }
+
+  function handleBackToContacts() {
+    setSelectedContactId(null);
+    setContactDetail(null);
+    setContactEditing(false);
+    setChatMessages([]);
+    setChatSummary(null);
+    setChatDraft("");
+    setChatError("");
+    setChatStreamingText("");
+  }
+
+  async function handleDeleteContact() {
+    if (!selectedContact) {
+      return;
+    }
+
     const confirmed = globalThis.confirm(
-      `Delete ${customer.displayName ?? "este contato"}?`
+      `Delete ${selectedContact.displayName ?? "este contato"}?`
     );
 
     if (!confirmed) {
       return;
     }
 
-    setContactDeletingId(customer.id);
+    setContactDeletingId(selectedContact.id);
     setContactSaving(true);
     setContactsError("");
 
     try {
       const response = await chrome.runtime.sendMessage({
         request: {
-          customerId: customer.id
+          customerId: selectedContact.id
         },
         type: "assist/customer.delete"
       }) as RuntimeResponseMessage;
@@ -667,13 +910,115 @@ export function App() {
         setContacts((current) =>
           current.filter((item) => item.id !== deletedCustomerId)
         );
-        setSelectedContactId((current) => current === deletedCustomerId ? null : current);
+        setSelectedContactId(null);
+        setContactDetail(null);
+        setContactEditing(false);
       }
     } catch {
       setContactsError("Nao foi possivel apagar o contato agora.");
     } finally {
       setContactSaving(false);
       setContactDeletingId(null);
+    }
+  }
+
+  async function handleSendChat() {
+    if (!selectedContact || !chatDraft.trim()) {
+      return;
+    }
+
+    const message = chatDraft.trim();
+    const sessionState = await getAuthSession();
+
+    if (!sessionState) {
+      setChatError("Entre novamente para conversar com a IA.");
+      return;
+    }
+
+    const optimisticUserMessage: CustomerChatMessage = {
+      content: message,
+      createdAt: new Date().toISOString(),
+      id: crypto.randomUUID(),
+      role: "user",
+      sequence: (chatMessages.at(-1)?.sequence ?? 0) + 1,
+      status: "completed"
+    };
+
+    setChatDraft("");
+    setChatError("");
+    setChatSending(true);
+    setChatStreamingText("");
+    setChatMessages((current) => [...current, optimisticUserMessage]);
+
+    try {
+      await streamCustomerChat(
+        sessionState.tokens.accessToken,
+        selectedContact.id,
+        { message },
+        {
+          onComplete: (event) => {
+            setChatMessages((current) => [...current, event.message]);
+            setChatSummary(event.summary);
+            setChatStreamingText("");
+          },
+          onDelta: (event) => {
+            setChatStreamingText((current) => current + event.text);
+          },
+          onError: (event) => {
+            setChatError(event.message);
+            void loadCustomerChat(selectedContact.id);
+          },
+          onStart: () => {
+            setChatStreamingText("");
+          }
+        }
+      );
+    } catch (error) {
+      setChatError(
+        error instanceof Error && error.message
+          ? error.message
+          : "Nao foi possivel conversar com a IA agora."
+      );
+    } finally {
+      setChatSending(false);
+      setChatStreamingText("");
+    }
+  }
+
+  async function handleClearChat() {
+    if (!selectedContact) {
+      return;
+    }
+
+    const confirmed = globalThis.confirm("Limpar a conversa deste contato?");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setChatLoading(true);
+    setChatError("");
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        customerId: selectedContact.id,
+        type: "assist/customer-chat.clear"
+      }) as RuntimeResponseMessage;
+
+      if (!response.ok) {
+        setChatError(response.error.message);
+        return;
+      }
+
+      if ("response" in response && response.response.status === "ok" && "deletedMessages" in response.response) {
+        setChatMessages([]);
+        setChatSummary(null);
+        setChatStreamingText("");
+      }
+    } catch {
+      setChatError("Nao foi possivel limpar a conversa.");
+    } finally {
+      setChatLoading(false);
     }
   }
 
@@ -743,7 +1088,7 @@ export function App() {
             {...(session.message ? { message: session.message } : {})}
             onAuthenticated={(user) => {
               setSession({ status: "logged_in", user });
-              void loadContacts();
+              void refreshActiveDomainAndContacts();
             }}
           />
           <Toaster position="bottom-right" />
@@ -751,6 +1096,14 @@ export function App() {
       </TooltipProvider>
     );
   }
+
+  const contactDraft: ContactDetailDraft = {
+    caseDraft: contactCaseDraft,
+    favoriteFields: contactFavoriteFieldDrafts,
+    identifiers: contactIdentifierDrafts,
+    name: contactNameDraft,
+    notes: contactNotesDraft
+  };
 
   return (
     <TooltipProvider>
@@ -780,7 +1133,15 @@ export function App() {
                 setResult(null);
                 setBulkResult(null);
                 setContacts([]);
+                setActiveDomain(null);
                 setSelectedContactId(null);
+                setContactDetail(null);
+                setContactEditing(false);
+                setChatMessages([]);
+                setChatSummary(null);
+                setChatDraft("");
+                setChatError("");
+                setChatStreamingText("");
                 setSiteContext(null);
                 setSiteContextError("");
                 setSiteContextOpen(false);
@@ -811,26 +1172,62 @@ export function App() {
           onDecision={handleBulkDecision}
           result={bulkResult}
         />
-        <ContactsView
-          caseDraft={contactCaseDraft}
-          customers={contacts}
-          deletingCustomerId={contactDeletingId}
-          errorMessage={contactsError}
-          identifierDrafts={contactIdentifierDrafts}
-          loading={contactsLoading}
-          nameDraft={contactNameDraft}
-          notesDraft={contactNotesDraft}
-          onCaseDraftChange={handleCaseDraftChange}
-          onDelete={handleDeleteContact}
-          onIdentifierDraftChange={handleIdentifierDraftChange}
-          onNameDraftChange={setContactNameDraft}
-          onNotesDraftChange={setContactNotesDraft}
-          onRefresh={() => void loadContacts()}
-          onSave={handleSaveContact}
-          onSelect={setSelectedContactId}
-          saving={contactSaving}
-          selectedCustomerId={selectedContactId}
-        />
+        {selectedContactId ? (
+          <ContactDetailView
+            chatDraft={chatDraft}
+            chatError={chatError}
+            chatLoading={chatLoading}
+            chatMessages={chatMessages}
+            chatSending={chatSending}
+            chatStreamingText={chatStreamingText}
+            chatSummary={chatSummary}
+            customer={selectedContact}
+            deleting={contactDeletingId === selectedContactId}
+            draft={contactDraft}
+            editing={contactEditing}
+            onBack={handleBackToContacts}
+            onCancelEdit={() => {
+              if (selectedContact) {
+                setContactCaseDraft(caseDraftFromCustomer(selectedContact));
+                setContactIdentifierDrafts(identifierDraftsFromCustomer(selectedContact));
+                setContactFavoriteFieldDrafts([
+                  selectedContact.favoriteFields[0] ?? "",
+                  selectedContact.favoriteFields[1] ?? ""
+                ]);
+                setContactNameDraft(selectedContact.displayName ?? "");
+                setContactNotesDraft(selectedContact.notes ?? "");
+              }
+              setContactEditing(false);
+            }}
+            onCaseDraftChange={handleCaseDraftChange}
+            onChatDraftChange={setChatDraft}
+            onClearChat={handleClearChat}
+            onDelete={handleDeleteContact}
+            onEdit={() => setContactEditing(true)}
+            onFavoriteFieldChange={handleFavoriteFieldChange}
+            onIdentifierDraftChange={handleIdentifierDraftChange}
+            onNameDraftChange={setContactNameDraft}
+            onNotesDraftChange={setContactNotesDraft}
+            onSave={handleSaveContact}
+            onSendChat={handleSendChat}
+            onStarToggle={handleToggleStar}
+            saving={contactSaving}
+            starSaving={contactStarSaving}
+          />
+        ) : (
+          <ContactsView
+            activeDomain={activeDomain}
+            customers={contacts}
+            errorMessage={contactsError}
+            loading={contactsLoading}
+            onRefresh={() => void refreshActiveDomainAndContacts()}
+            onSearchQueryChange={setContactSearchQuery}
+            onSelect={(customerId) => {
+              void openContactDetail(customerId);
+            }}
+            searchQuery={contactSearchQuery}
+          />
+        )}
         <Toaster position="bottom-right" />
       </main>
     </TooltipProvider>

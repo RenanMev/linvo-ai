@@ -33,6 +33,18 @@ enum ConfirmationStatus {
   rejected
 }
 
+enum CustomerAiMessageRole {
+  user
+  assistant
+}
+
+enum CustomerAiMessageStatus {
+  completed
+  streaming
+  interrupted
+  error
+}
+
 model User {
   id                  String               @id @default(uuid()) @db.Uuid
   email               String               @unique
@@ -43,6 +55,7 @@ model User {
   updatedAt           DateTime             @updatedAt @db.Timestamptz(6)
   customers           Customer[]
   customerCases       CustomerCase[]
+  customerAiThreads   CustomerAiThread[]
   customerDomPatterns CustomerDomPattern[]
   identificationRuns  IdentificationRun[]
   passwordResetTokens  PasswordResetToken[]
@@ -84,11 +97,14 @@ model Customer {
   displayName        String?
   notes              String?              @db.Text
   maskedIdentifiers  Json                 @default("{}")
+  isStarred          Boolean              @default(false)
+  favoriteFieldsJson Json                 @default("[]")
   confidence         Decimal              @db.Decimal(4, 3)
   firstSeenAt        DateTime             @default(now()) @db.Timestamptz(6)
   lastSeenAt         DateTime             @default(now()) @db.Timestamptz(6)
   createdAt          DateTime             @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime             @updatedAt @db.Timestamptz(6)
+  aiThread           CustomerAiThread?
   cases              CustomerCase[]
   domPatterns        CustomerDomPattern[]
   identificationRuns IdentificationRun[]
@@ -96,6 +112,36 @@ model Customer {
 
   @@unique([userId, domain, identityHash])
   @@index([userId, domain, lastSeenAt])
+}
+
+model CustomerAiThread {
+  id                       String              @id @default(uuid()) @db.Uuid
+  userId                   String              @db.Uuid
+  customerId               String              @unique @db.Uuid
+  summary                  String?             @db.Text
+  messageCountSinceSummary Int                 @default(0)
+  createdAt                DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime            @updatedAt @db.Timestamptz(6)
+  customer                 Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  messages                 CustomerAiMessage[]
+  user                     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+model CustomerAiMessage {
+  id        String                  @id @default(uuid()) @db.Uuid
+  threadId  String                  @db.Uuid
+  role      CustomerAiMessageRole
+  content   String                  @db.Text
+  status    CustomerAiMessageStatus @default(completed)
+  sequence  Int
+  createdAt DateTime                @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime                @updatedAt @db.Timestamptz(6)
+  thread    CustomerAiThread        @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, sequence])
+  @@index([threadId, sequence])
 }
 
 model CustomerCase {

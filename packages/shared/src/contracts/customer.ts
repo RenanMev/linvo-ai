@@ -7,6 +7,22 @@ import {
 } from "../limits";
 import { apiErrorResponseSchema } from "./errors";
 
+export const customerFavoriteFieldSchema = z.enum([
+  "protocol",
+  "phone",
+  "email",
+  "document",
+  "caseStatus",
+  "caseSubject",
+  "domain",
+  "lastSeenAt"
+]);
+
+export const customerFavoriteFieldsSchema = z
+  .array(customerFavoriteFieldSchema)
+  .max(2)
+  .default([]);
+
 export const maskedIdentifiersSchema = z
   .object({
     document: z.string().trim().min(1).max(MAX_DOM_LABEL_CHARS).optional(),
@@ -28,11 +44,25 @@ export const customerSummarySchema = z.object({
   cases: z.array(customerCaseSummarySchema).default([]),
   displayName: z.string().trim().min(1).max(MAX_NAME_CHARS).optional(),
   domain: z.string().trim().min(1).max(240).optional(),
+  favoriteFields: customerFavoriteFieldsSchema,
   id: z.string().uuid(),
+  isStarred: z.boolean().default(false),
   lastSeenAt: z.string().datetime(),
   maskedIdentifiers: maskedIdentifiersSchema,
   notes: z.string().max(MAX_CUSTOMER_NOTES_CHARS).optional()
 });
+
+export const customerDetailSchema = customerSummarySchema;
+
+export const customerDetailResponseSchema = z.object({
+  customer: customerDetailSchema,
+  status: z.literal("ok")
+});
+
+export const customerDetailApiResponseSchema = z.union([
+  customerDetailResponseSchema,
+  apiErrorResponseSchema
+]);
 
 export const customersListResponseSchema = z.object({
   customers: z.array(customerSummarySchema).default([]),
@@ -77,6 +107,8 @@ export const customerUpdateRequestSchema = z.object({
       protocol: customerUpdateTextSchema.optional()
     })
     .optional(),
+  favoriteFields: customerFavoriteFieldsSchema.optional(),
+  isStarred: z.boolean().optional(),
   notes: z.string().max(MAX_CUSTOMER_NOTES_CHARS).optional()
 });
 
@@ -93,8 +125,12 @@ export const customerUpdateApiResponseSchema = z.union([
 ]);
 
 export type MaskedIdentifiers = z.infer<typeof maskedIdentifiersSchema>;
+export type CustomerFavoriteField = z.infer<typeof customerFavoriteFieldSchema>;
 export type CustomerCaseSummary = z.infer<typeof customerCaseSummarySchema>;
 export type CustomerSummary = z.infer<typeof customerSummarySchema>;
+export type CustomerDetail = z.infer<typeof customerDetailSchema>;
+export type CustomerDetailResponse = z.infer<typeof customerDetailResponseSchema>;
+export type CustomerDetailApiResponse = z.infer<typeof customerDetailApiResponseSchema>;
 export type CustomersListResponse = z.infer<typeof customersListResponseSchema>;
 export type CustomerDeleteRequest = z.infer<typeof customerDeleteRequestSchema>;
 export type CustomerDeleteResponse = z.infer<typeof customerDeleteResponseSchema>;

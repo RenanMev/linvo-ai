@@ -20,6 +20,7 @@ import {
   hashWithSecret,
   isDecidableConfirmationStatus,
   parseAiIdentificationResult,
+  parseCustomerFavoriteFields,
   parseDomSignature,
   parseMaskedIdentifiers,
   resolveIdentity,
@@ -86,6 +87,8 @@ interface CustomerUpdateIdentifiersInput {
   protocol?: string | undefined;
 }
 
+type CustomerFavoriteFieldValue = CustomerSummary["favoriteFields"][number];
+
 export class IdentificationDecisionConflictError extends Error {
   constructor() {
     super("Identification run has already been decided.");
@@ -138,6 +141,16 @@ function mergeAiMaskedIdentifiers(
     ...parseMaskedIdentifiers(currentValue),
     ...buildMaskedIdentifiers(aiResult)
   };
+}
+
+function normalizeFavoriteFields(
+  fields: CustomerFavoriteFieldValue[] | undefined
+): CustomerFavoriteFieldValue[] | undefined {
+  if (fields === undefined) {
+    return undefined;
+  }
+
+  return Array.from(new Set(fields)).slice(0, 2);
 }
 
 function hasCaseUpdates(input: CustomerUpdateCaseInput | undefined): input is CustomerUpdateCaseInput {
@@ -357,7 +370,10 @@ export class CustomerRepository {
           take: 5
         }
       },
-      orderBy: { lastSeenAt: "desc" },
+      orderBy: [
+        { isStarred: "desc" },
+        { lastSeenAt: "desc" }
+      ],
       take: 100,
       where: {
         ...(domain ? { domain } : {}),
@@ -368,10 +384,32 @@ export class CustomerRepository {
     return customers.map((customer) => toCustomerSummary(customer));
   }
 
+  async getCustomerDetail(input: {
+    customerId: string;
+    userId: string;
+  }): Promise<CustomerSummary | null> {
+    const customer = await this.prisma.customer.findFirst({
+      include: {
+        cases: {
+          orderBy: { lastSeenAt: "desc" },
+          take: 5
+        }
+      },
+      where: {
+        id: input.customerId,
+        userId: input.userId
+      }
+    });
+
+    return customer ? toCustomerSummary(customer) : null;
+  }
+
   async updateCustomer(input: {
     case?: CustomerUpdateCaseInput;
     customerId: string;
     displayName?: string;
+    favoriteFields?: CustomerFavoriteFieldValue[];
+    isStarred?: boolean;
     maskedIdentifiers?: CustomerUpdateIdentifiersInput;
     notes?: string;
     userId: string;
@@ -396,6 +434,7 @@ export class CustomerRepository {
       customer.maskedIdentifiers,
       input.maskedIdentifiers
     );
+    const favoriteFields = normalizeFavoriteFields(input.favoriteFields);
     const updated = await this.prisma.$transaction(async (transaction) => {
       const data: Prisma.CustomerUpdateInput = {};
 
@@ -418,6 +457,14 @@ export class CustomerRepository {
 
       if (maskedIdentifiers !== undefined) {
         data.maskedIdentifiers = toJsonValue(maskedIdentifiers);
+      }
+
+      if (favoriteFields !== undefined) {
+        data.favoriteFieldsJson = toJsonValue(parseCustomerFavoriteFields(favoriteFields));
+      }
+
+      if (input.isStarred !== undefined) {
+        data.isStarred = input.isStarred;
       }
 
       if (input.notes !== undefined) {

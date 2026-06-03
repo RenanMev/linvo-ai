@@ -74,7 +74,9 @@ const customer: CustomerSummary = {
     }
   ],
   displayName: "Davi",
+  favoriteFields: ["protocol", "phone"],
   id: "62505a68-e0d1-4439-950d-e54271fb15d5",
+  isStarred: false,
   lastSeenAt: new Date().toISOString(),
   maskedIdentifiers: { protocol: "140987001" }
 };

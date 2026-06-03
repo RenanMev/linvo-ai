@@ -13,91 +13,54 @@ const customers: CustomerSummary[] = [
     cases: [{ id: "22222222-2222-4222-8222-222222222222", lastSeenAt: "2026-06-01T12:00:00.000Z", protocol: "10703030" }],
     displayName: "Renan Devs",
     domain: "painel.nvoip.com.br",
+    favoriteFields: ["protocol", "phone"],
     id: "11111111-1111-4111-8111-111111111111",
+    isStarred: true,
     lastSeenAt: "2026-06-01T12:00:00.000Z",
-    maskedIdentifiers: { protocol: "10703030" },
+    maskedIdentifiers: { phone: "(55) *****-3122", protocol: "10703030" },
     notes: "Cliente prefere contato por WhatsApp."
   }
 ];
 
 describe("ContactsView", () => {
-  it("renders a clickable contact list and editable details", async () => {
+  it("renders a clickable domain contact list with favorites", async () => {
     const container = document.createElement("div");
     const root = createRoot(container);
     const selectedIds: string[] = [];
-    const saved: string[] = [];
-    const deleted: string[] = [];
+    const searched: string[] = [];
 
     await act(async () => {
       root.render(
         <ContactsView
-          caseDraft={{
-            caseId: "22222222-2222-4222-8222-222222222222",
-            protocol: "10703030",
-            status: "",
-            subject: ""
-          }}
+          activeDomain="painel.nvoip.com.br"
           customers={customers}
-          deletingCustomerId={null}
           errorMessage=""
-          identifierDrafts={{
-            document: "",
-            email: "",
-            phone: "",
-            protocol: "10703030"
-          }}
           loading={false}
-          nameDraft="Renan Devs"
-          notesDraft="Cliente prefere contato por WhatsApp."
-          onCaseDraftChange={(field, value) => selectedIds.push(`case:${field}:${value}`)}
-          onDelete={(customer) => deleted.push(customer.id)}
-          onIdentifierDraftChange={(field, value) => selectedIds.push(`identifier:${field}:${value}`)}
-          onNameDraftChange={(value) => selectedIds.push(`name:${value}`)}
-          onNotesDraftChange={(value) => selectedIds.push(`notes:${value}`)}
           onRefresh={() => selectedIds.push("refresh")}
-          onSave={() => saved.push("save")}
+          onSearchQueryChange={(value) => searched.push(value)}
           onSelect={(customerId) => selectedIds.push(customerId)}
-          saving={false}
-          selectedCustomerId={customers[0]?.id ?? null}
+          searchQuery=""
         />
       );
     });
 
     expect(container.textContent).toContain("Contatos");
+    expect(container.textContent).toContain("painel.nvoip.com.br");
     expect(container.textContent).toContain("Renan Devs");
-    expect(container.textContent).toContain("Telefone");
-    expect(container.textContent).toContain("Documento");
-    expect(container.textContent).toContain("Protocolo do caso");
-    expect(container.textContent).toContain("Informacoes / observacoes");
+    expect(container.textContent).toContain("Protocolo: 10703030");
+    expect(container.textContent).toContain("Telefone: (55) *****-3122");
+    expect(container.textContent).not.toContain("Salvar informacoes");
+    expect(container.querySelector("button[aria-label='Delete Renan Devs']")).toBeNull();
 
     const contactButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Renan Devs") &&
-      button.textContent?.includes("10703030")
+      button.textContent?.includes("Renan Devs")
     );
-    const inlineDeleteButton = container.querySelector("button[aria-label='Delete Renan Devs']");
-
-    expect(inlineDeleteButton?.textContent).toContain("Delete");
 
     await act(async () => {
       contactButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Salvar informacoes")
-    );
-    await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const deleteButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.getAttribute("aria-label") === "Delete Renan Devs"
-    );
-    await act(async () => {
-      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
     expect(selectedIds).toContain(customers[0]?.id);
-    expect(saved).toEqual(["save"]);
-    expect(deleted).toEqual([customers[0]?.id]);
+    expect(searched).toEqual([]);
   });
 });
